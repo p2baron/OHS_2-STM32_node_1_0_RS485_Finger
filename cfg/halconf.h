@@ -86,7 +86,7 @@
  * @brief   Enables the I2C subsystem.
  */
 #if !defined(HAL_USE_I2C) || defined(__DOXYGEN__)
-#define HAL_USE_I2C                         TRUE
+#define HAL_USE_I2C                         FALSE
 #endif
 
 /**
@@ -121,7 +121,7 @@
  * @brief   Enables the PWM subsystem.
  */
 #if !defined(HAL_USE_PWM) || defined(__DOXYGEN__)
-#define HAL_USE_PWM                         FALSE
+#define HAL_USE_PWM                         TRUE
 #endif
 
 /**
@@ -143,6 +143,13 @@
  */
 #if !defined(HAL_USE_SERIAL) || defined(__DOXYGEN__)
 #define HAL_USE_SERIAL                      TRUE
+#endif
+
+/**
+ * @brief   Enables the RS485 subsystem.
+ */
+#if !defined(HAL_USE_RS485) || defined(__DOXYGEN__)
+#define HAL_USE_RS485                       TRUE
 #endif
 
 /**
@@ -413,6 +420,19 @@
  */
 #if !defined(SERIAL_BUFFERS_SIZE) || defined(__DOXYGEN__)
 #define SERIAL_BUFFERS_SIZE                 16
+#endif
+
+/*===========================================================================*/
+/* RS485 driver related settings.                                           */
+/*===========================================================================*/
+
+/**
+ * @brief   Default bit rate.
+ * @details Configuration parameter, this is the baud rate selected for the
+ *          default configuration.
+ */
+#if !defined(RS485_DEFAULT_BITRATE) || defined(__DOXYGEN__)
+#define RS485_DEFAULT_BITRATE              19200
 #endif
 
 /*===========================================================================*/

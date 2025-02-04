@@ -103,7 +103,7 @@
 /*
  * I2C driver system settings.
  */
-#define STM32_I2C_USE_I2C1                  TRUE
+#define STM32_I2C_USE_I2C1                  FALSE
 #define STM32_I2C_USE_I2C2                  FALSE
 #define STM32_I2C_BUSY_TIMEOUT              50
 #define STM32_I2C_I2C1_IRQ_PRIORITY         5
@@ -135,7 +135,7 @@
 #define STM32_PWM_USE_TIM1                  FALSE
 #define STM32_PWM_USE_TIM2                  FALSE
 #define STM32_PWM_USE_TIM3                  FALSE
-#define STM32_PWM_USE_TIM4                  FALSE
+#define STM32_PWM_USE_TIM4                  TRUE
 #define STM32_PWM_USE_TIM5                  FALSE
 #define STM32_PWM_USE_TIM8                  FALSE
 #define STM32_PWM_TIM1_IRQ_PRIORITY         7
@@ -163,6 +163,22 @@
 #define STM32_SERIAL_USART3_PRIORITY        12
 #define STM32_SERIAL_UART4_PRIORITY         12
 #define STM32_SERIAL_UART5_PRIORITY         12
+
+/*
+ * RS485 driver system settings.
+ */
+#define STM32_RS485_USE_USART1             FALSE
+#define STM32_RS485_USE_USART2             FALSE
+#define STM32_RS485_USE_USART3             TRUE
+#define STM32_RS485_USE_UART4              FALSE
+#define STM32_RS485_USE_UART5              FALSE
+#define STM32_RS485_USE_USART6             FALSE
+#define STM32_RS485_USART1_PRIORITY        12
+#define STM32_RS485_USART2_PRIORITY        12
+#define STM32_RS485_USART3_PRIORITY        12
+#define STM32_RS485_UART4_PRIORITY         12
+#define STM32_RS485_UART5_PRIORITY         12
+#define STM32_RS485_USART6_PRIORITY        12
 
 /*
  * SPI driver system settings.

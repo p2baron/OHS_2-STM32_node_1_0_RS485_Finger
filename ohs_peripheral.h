@@ -22,6 +22,7 @@
  */
 #ifndef OHS_PERIPHERAL_H_
 #define OHS_PERIPHERAL_H_
+#ifdef HAS_RADIO
 /*
  * RFM69HW SPI setting
  */
@@ -36,14 +37,16 @@ const SPIConfig spi1cfg = {
 /*
  * RFM69 configuration
  */
+
 rfm69Config_t rfm69cfg = {
   &SPID1,
   &spi1cfg,
   LINE_RADIO_INT,
   RF69_868MHZ,
   20,
-  101
+  100
 };
+#endif
 /*
  * Console default setting
  */
@@ -55,12 +58,14 @@ static SerialConfig serialCfg = {
   NULL, NULL, NULL, NULL
 };
 /*
- * I2C1 config.
+ * RS485 default setting
  */
-static const I2CConfig i2cfg1 = {
-    OPMODE_I2C,
-    100000,
-    STD_DUTY_CYCLE,
+// OHS TODO modify port pad to line
+static RS485Config rs485cfg = {
+  19200,    // speed
+  7,        // address
+  GPIOB,    // port
+  GPIOB_PIN13 // pad
 };
 
 #endif /* OHS_PERIPHERAL_H_ */

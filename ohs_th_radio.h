@@ -20,31 +20,46 @@
 /*
  * Registration
  */
-void sendConf(){
+void sendConf(void){
   int8_t result;
   uint8_t count = 0;
 
   // Wait some time to avoid contention
   chThdSleepMilliseconds(rfm69cfg.nodeID * 1000);
 
-  #ifdef SERIAL_PORT
-    SERIAL_PORT.print(F("Conf:"));
-  #endif
+  DBG_RADIO("Conf:");
 
   while (count < sizeof(conf.reg)) {
     msg[0] = 'R'; // Registration flag
     memcpy(&msg[1], &conf.reg[count], REG_LEN);
-    result = rfm69SendWithRetry(GATEWAYID, &msg[0], REG_LEN + 1, RADIO_REPEAT);
-    //result = rfm69Send(1, &msg[0], REG_LEN + 1, false);
-    #ifdef SERIAL_PORT
-      SERIAL_PORT.print(F(" ")); SERIAL_PORT.print(result);
-    #endif
+    result = rfm69SendWithRetry(GATEWAYID, &msg[0], REG_LEN + 1, MSG_REPEAT);
+    DBG_RADIO(" %d",result);
+
     count += REG_LEN;
   }
 
-  #ifdef SERIAL_PORT
-    SERIAL_PORT.println(F("."));
-  #endif
+  DBG_RADIO(".");
+}
+/*
+ * Ping
+ */
+void ping(void){
+  msg[0] = 'C';
+  msg[1] = 2; // Ping
+  rfm69SendWithRetry(GATEWAYID, &msg[0], 2, MSG_REPEAT);
+}
+/*
+ * Send float value of one element to gateway
+ */
+void sendValue(uint8_t element, float value){
+  u.fval = value;
+  msg[0] = conf.reg[(REG_LEN*element)];
+  msg[1] = conf.reg[1+(REG_LEN*element)];
+  msg[2] = conf.reg[2+(REG_LEN*element)];
+  memcpy(&msg[3], &u.b[0], 4);
+  // Send to GW
+  rfm69SendWithRetry(GATEWAYID, msg, 7, MSG_REPEAT);
+  rfm69Sleep();
 }
 /*
  * RFM69 thread
