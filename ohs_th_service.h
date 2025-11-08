@@ -1,4 +1,4 @@
-/*
+ /*
  * ohs_th_service.h
  *
  *  Created on: 23. 2. 2020
@@ -19,15 +19,6 @@
 #endif
 
 /*
- * Add float value to message
- */
-void addFloatVal(uint8_t element, uint8_t *out, float value){
-  out[0] = conf.reg[1+(REG_LEN*element)];
-  out[1] = conf.reg[2+(REG_LEN*element)];
-  u.fval = value;
-  memcpy(&out[2], &u.b[0], 4);
-}
-/*
  * Service thread
  */
 static THD_WORKING_AREA(waServiceThread, 256);
@@ -45,12 +36,12 @@ static THD_FUNCTION(ServiceThread, arg) {
 
     // Ping
     if (counter == 0) {
-      ping();
+      //ping();
     }
 
     // Sensor data
     if ((counter%60) == 0) {
-      sendValue(0, (float)counter);
+      //sendValue(0, (float)counter);
     }
 
   } // while(true)

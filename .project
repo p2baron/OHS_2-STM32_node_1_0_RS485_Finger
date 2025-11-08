@@ -80,12 +80,13 @@
 		<link>
 			<name>board</name>
 			<type>2</type>
-			<location>/home/vysocan/ChibiStudio/chibios_stable-20.3.x/os/hal/boards/OHS_STM32_F103_MINI</location>
-		</link>
-		<link>
-			<name>os</name>
-			<type>2</type>
-			<locationURI>CHIBIOS/os</locationURI>
+			<locationURI>CHIBIOS/os/hal/boards/OHS_STM32_F103_MINI</locationURI>
 		</link>
 	</linkedResources>
+	<variableList>
+		<variable>
+			<name>CHIBIOS</name>
+			<value>file:/home/vysocan/Projects/ChibiStudio/chibios_stable-21.11.x</value>
+		</variable>
+	</variableList>
 </projectDescription>

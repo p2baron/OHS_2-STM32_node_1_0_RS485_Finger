@@ -36,6 +36,7 @@
  */
 
 #include <stdlib.h>
+#include <stdbool.h>
 #include <rfm69.h>
 #include <rfm69Registers.h>
 #include <string.h>
@@ -43,7 +44,7 @@
 #include "chprintf.h"
 
 #ifndef RFM69_DEBUG
-#define RFM69_DEBUG 1
+#define RFM69_DEBUG 0
 #endif
 
 #if RFM69_DEBUG

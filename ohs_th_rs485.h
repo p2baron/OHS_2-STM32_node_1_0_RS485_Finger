@@ -8,7 +8,9 @@
 #ifndef OHS_TH_RS485_H_
 #define OHS_TH_RS485_H_
 
-#define RS485_DEBUG 1
+#ifdef HAS_RS485
+
+#define RS485_DEBUG 0
 
 #if RS485_DEBUG
 #define DBG_RS485(...) {chprintf(console, __VA_ARGS__);}
@@ -20,6 +22,7 @@
  */
 void sendConf(void){
   int8_t result;
+  uint8_t pos = 0;
 
   // Wait some time to avoid contention
   chThdSleepMilliseconds(rs485cfg.address * 1000);
@@ -35,9 +38,8 @@ void sendConf(void){
   while (pos < sizeof(conf.reg)) {
     msg.data[0] = 'R'; // Registration flag
     memcpy(&msg.data[1], &conf.reg[pos], REG_LEN);
-    //result = rs485SendMsgWithACK(&RS485D3, &msg, MSG_REPEAT);
-    result = rs485SendMsg(&RS485D3, &msg);
-    DBG_RS485(" %d",result);
+    result = rs485SendMsgWithACK(&RS485D3, &msg, MSG_REPEAT);
+    DBG_RS485(" %d",++result);
     pos += REG_LEN;
   }
 
@@ -66,10 +68,8 @@ void sendValue(uint8_t element, float value) {
   msg.data[3] = u.b[0]; msg.data[4] = u.b[1];
   msg.data[5] = u.b[2]; msg.data[6] = u.b[3];
   // Send to GW
-  rs485SendMsg(&RS485D3, &msg);
-  //rs485SendMsgWithACK(&RS485D3, &msg, MSG_REPEAT);
+  rs485SendMsgWithACK(&RS485D3, &msg, MSG_REPEAT);
 }
-
 /*
  * RS485 thread
  */
@@ -80,6 +80,7 @@ static THD_FUNCTION(RS485Thread, arg) {
   eventmask_t evt;
   msg_t resp;
   RS485Msg_t rs485Msg;
+  uint8_t temp;
 
   // Register
   chEvtRegister((event_source_t *)&RS485D3.event, &serialListener, EVENT_MASK(0));
@@ -105,17 +106,38 @@ static THD_FUNCTION(RS485Thread, arg) {
         for(uint8_t i = 0; i < rs485Msg.length; i++) {DBG_RS485("%x, ", rs485Msg.data[i]);}
       }
       DBG_RS485("\r\n");
-      //DBG_RS485("ib %d %d %d , ob %d %d %d\r\n", RS485D3.ib[0], RS485D3.ib[1],
-      //          RS485D3.ib[2], RS485D3.ob[0], RS485D3.ob[1], RS485D3.ob[2]);
 
       if (resp == MSG_OK) {
+        // Commands
         if (rs485Msg.ctrl == RS485_FLAG_CMD) {
+          switch (rs485Msg.length) {
+            case 1: sendConf(); break; // Request for registration
+            case 10 ... 17 : // Auth. commands
+              mode = rs485Msg.length;
+              break;
+            default: break;
+          }
         }
+        // Data
         if (rs485Msg.ctrl == RS485_FLAG_DTA) {
+          if (rs485Msg.data[0] == 'R') {
+            temp = 0;
+            while (((conf.reg[temp] != rs485Msg.data[1]) || (conf.reg[temp+1] != rs485Msg.data[2]) ||
+                    (conf.reg[temp+2] != rs485Msg.data[3])) && (temp < sizeof(conf.reg))) {
+              temp += REG_LEN; // size of one conf. element
+            }
+            if (temp < sizeof(conf.reg)) {
+              memcpy(&conf.reg[temp], &rs485Msg.data[1], REG_LEN);
+              // Save it to EEPROM
+              conf.version = VERSION;
+              writeToFlash(&conf, sizeof(conf));
+            }
+          }
         } // data
       } // MSG_OK
     } // (flags & RS485_MSG_RECEIVED)
   }
 }
 
+#endif /* HAS_RS485 */
 #endif /* OHS_TH_RS485_H_ */

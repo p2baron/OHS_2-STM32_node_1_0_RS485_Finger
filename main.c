@@ -15,9 +15,17 @@
 */
 
 // Node definitions
-#define HAS_USART1
+#define HAS_SERIAL1
 //#define HAS_RADIO
 #define HAS_RS485
+#define HAS_FINGERPRINT
+#define DEBUG
+
+#ifdef DEBUG
+#define DBG(...) {chprintf(console, __VA_ARGS__);}
+#else
+#define DBG(...)
+#endif
 
 // This node settings
 #define VERSION         100    // Version of EEPROM struct
@@ -36,23 +44,27 @@
 #ifdef HAS_RS485
 #define GATEWAYID       0    // RS485 Gateway
 #endif
-
+// ChibiOS override
+#define SERIAL_BUFFERS_SIZE 128
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "ch.h"
 #include "hal.h"
-
+#include "chmboxes.h"
 //#include "shell.h"
 #include "chprintf.h"
+#include "board.h"
 
 // Define debug console
-#ifdef HAS_USART1
+#ifdef HAS_SERIAL1
 BaseSequentialStream* console = (BaseSequentialStream*)&SD1;
 #endif
+
 
 //#include "usbcfg.h"
 
@@ -62,7 +74,11 @@ BaseSequentialStream* console = (BaseSequentialStream*)&SD1;
 #endif
 
 // Global variables
-uint8_t pos = 0;
+uint8_t mode = 0; // Authentication mode
+#ifdef HAS_FINGERPRINT
+uint8_t finger[1536];
+uint8_t comm[1024*3];
+#endif
 
 // Configuration struct
 struct config_t {
@@ -70,10 +86,21 @@ struct config_t {
   uint8_t  reg[REG_LEN * ELEMENTS]; // REG_LEN * #, number of elements on this node
 } conf;
 
+// RTTTL thread variables
+static mailbox_t rtttlMailbox;
+static msg_t rtttlMailboxBuffer[1]; // Storage for one message (pointer)
+
 // OHS includes
 #include "ohs_peripheral.h"
+#ifdef HAS_FINGERPRINT
+#include "R503.h"
+#endif
+#include "rle.h"
+#include "reg_defaults.h"
 #include "ohs_func.h"
+#include "eeprom2flash.h"
 #include "tone.h"
+
 // Thread handling
 #ifdef HAS_RADIO
 #include "ohs_th_radio.h"
@@ -83,16 +110,17 @@ uint8_t msg[REG_LEN]; // size of REG_LEN, or larger for sensor msg if longer tha
 RS485Msg_t msg;
 #include "ohs_th_rs485.h"
 #endif
+// other threads
 #include "ohs_th_service.h"
+#include "ohs_th_rtttl.h"
 
 /*
  * Blinker thread, times are in milliseconds.
  */
-static THD_WORKING_AREA(waThread1, 256);
-static __attribute__((noreturn)) THD_FUNCTION(Thread1, arg) {
+static THD_WORKING_AREA(waBlinkerThread, 256);
+static __attribute__((noreturn)) THD_FUNCTION(BlinkerThread, arg) {
   (void)arg;
 
-  chRegSetThreadName("blinker");
   systime_t time = 500;
 
   while (true) {
@@ -118,25 +146,30 @@ int main(void) {
   palSetPadMode(GPIOA, GPIOA_MOSI, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
   palSetPadMode(GPIOA, GPIOA_SS, PAL_MODE_OUTPUT_PUSHPULL);
 #endif
-#ifdef HAS_USART1
+#ifdef HAS_SERIAL1
   palSetPadMode(GPIOA, GPIOA_TX1, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
   palSetPadMode(GPIOA, GPIOA_RX1, PAL_MODE_INPUT);
+#endif
+#ifdef HAS_FINGERPRINT
+  palSetPadMode(GPIOA, GPIOA_TX2, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
+  palSetPadMode(GPIOA, GPIOA_RX2, PAL_MODE_INPUT);
 #endif
 #ifdef HAS_RS485
   palSetPadMode(GPIOB, GPIOB_TX3, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
   palSetPadMode(GPIOB, GPIOB_RX3, PAL_MODE_INPUT);
-  palSetPadMode(GPIOB, GPIOB_PIN13, PAL_MODE_OUTPUT_PUSHPULL);
+  palSetPadMode(rs485cfg.deport, rs485cfg.depad, PAL_MODE_OUTPUT_PUSHPULL);
 #endif
-
-  // Debug port
+  /*
+   * Definitions initialization.
+   */
+#ifdef HAS_SERIAL1
   sdStart(&SD1,  &serialCfg);
-  chprintf(console, "\r\nOHS node start\r\n");
-  // RS485
+  DBG("\r\nOHS node start\r\n");
+#endif
 #ifdef HAS_RS485
   rs485Start(&RS485D3, &rs485cfg);
-  chprintf(console, "RS485 timeout: %d(uS)/%d(tick)\r\n", RS485D3.oneByteTimeUS, RS485D3.oneByteTimeI);
+  DBG("RS485 timeout: %d(uS)/%d(tick)\r\n", RS485D3.oneByteTimeUS, RS485D3.oneByteTimeI);
 #endif
-
 #ifdef HAS_RADIO
   // SPI
   spiStart(&SPID1, &spi1cfg);
@@ -145,11 +178,23 @@ int main(void) {
   rfm69SetHighPower(true); // long range version
   rfm69AutoPower(-75);
 #endif
-#ifdef HAS_RS485
+#ifdef HAS_FINGERPRINT
+  R503Init(&SD2, 0xFFFFFFFF, 0);
 #endif
+
+  // mailboxes
+  chMBObjectInit(&rtttlMailbox, rtttlMailboxBuffer, 1);
+
+
+  // Read configuration
+  readFromFlash(&conf, sizeof(conf));
+  DBG("Flash EEPROM start: 0x%08x\r\n", FLASH_EE_REGION);
+  if (conf.version != VERSION ) {
+    setDefault();
+    writeToFlash(&conf, sizeof(conf));
+  }
   // Register this node
-  setDefault();
-  sendConf();
+  //sendConf();
   /*
    * Create the threads.
    */
@@ -159,16 +204,40 @@ int main(void) {
 #ifdef HAS_RS485
   chThdCreateStatic(waRS485Thread, sizeof(waRS485Thread), NORMALPRIO, RS485Thread, (void*)"rs485");
 #endif
-  chThdCreateStatic(waServiceThread, sizeof(waServiceThread), NORMALPRIO, ServiceThread, (void*)"service");
-  chThdCreateStatic(waThread1, sizeof(waThread1), NORMALPRIO, Thread1, NULL);
+  chThdCreateStatic(waServiceThread, sizeof(waServiceThread), NORMALPRIO-1, ServiceThread, (void*)"service");
+  chThdCreateStatic(waBlinkerThread, sizeof(waBlinkerThread), NORMALPRIO, BlinkerThread, (void*)"blinker");
+  chThdCreateStatic(waRTTTLThread, sizeof(waRTTTLThread), NORMALPRIO, RTTTLThread, (void*)"rtttl");
 
-  /*
-   * Normal main() thread activity, spawning shells.
-   */
+  // Normal main() thread activity, spawning shells.
   toneInit();
-  tone(NOTE_A3,1000);
+
+  while (R503Start() != R503_OK) {
+	#ifdef HAS_SERIAL1
+	  chprintf(console, "FP Init error!\r\n");
+	#endif
+	chThdSleepMilliseconds(2000);
+  }
+
+  //enrollFinger();
+  chThdSleepMilliseconds(200);
+  searchFinger();
+  chThdSleepMilliseconds(200);
+  downloadTemplate();
+
+
+  chprintf(console, "Playing melody\r\n");
+  //const char *melody = "Impossible:d=16,o=6,b=95:32d,32d#,32d,32d#,32d,32d#,32d,32d#,32d,32d,32d#,32e,32f,32f#,32g,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,a#,g,2d,32p,a#,g,2c#,32p,a#,g,2c,a#5,8c,2p,32p,a#5,g5,2f#,32p,a#5,g5,2f,32p,a#5,g5,2e,d#,8d";
+
+  const char *song = "Imperial:d=4,o=5,b=120:32e,32e,32e,32c,32e,32g";
+  chMBPostTimeout(&rtttlMailbox, (msg_t)song, TIME_INFINITE);
+
+  int8_t count = 0;
   while (true) {
     chThdSleepMilliseconds(2000);
+    if (count == 5) count = 0;
 
+
+    chThdSleepMilliseconds(2000);
+    R503SetAuraLED(aLEDBreathing, count, 200, 1);
   }
 }

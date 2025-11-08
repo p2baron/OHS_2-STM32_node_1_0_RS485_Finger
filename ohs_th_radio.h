@@ -8,6 +8,8 @@
 #ifndef OHS_TH_RADIO_H_
 #define OHS_TH_RADIO_H_
 
+#ifdef HAS_RADIO
+
 #ifndef RADIO_DEBUG
 #define RADIO_DEBUG 1
 #endif
@@ -107,8 +109,7 @@ static THD_FUNCTION(RadioThread, arg) {
             memcpy(&conf.reg[tmp], (uint8_t*)&rfm69Data.data[1], REG_LEN);
             // Save it to EEPROM
             conf.version = VERSION;
-            // Update EEPROM
-            //***EEPROM.put(0, conf);
+            writeToFlash(&conf, sizeof(conf));
           }
           DBG_RADIO("\r\n");
           break;
@@ -117,4 +118,5 @@ static THD_FUNCTION(RadioThread, arg) {
   }
 }
 
+#endif /* HAS_RADIO */
 #endif /* OHS_TH_RADIO_H_ */

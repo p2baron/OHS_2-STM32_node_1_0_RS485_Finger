@@ -50,22 +50,24 @@ rfm69Config_t rfm69cfg = {
 /*
  * Console default setting
  */
+#ifdef HAS_SERIAL1
 static SerialConfig serialCfg = {
   115200,
   0,
   0,
-  0,
-  NULL, NULL, NULL, NULL
+  0
 };
+#endif
 /*
  * RS485 default setting
  */
-// OHS TODO modify port pad to line
+#ifdef HAS_RS485
 static RS485Config rs485cfg = {
   19200,    // speed
   7,        // address
   GPIOB,    // port
-  GPIOB_PIN13 // pad
+  GPIOB_DE3 // pad
 };
+#endif
 
 #endif /* OHS_PERIPHERAL_H_ */
