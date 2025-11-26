@@ -28,9 +28,9 @@
 #endif
 
 // This node settings
-#define VERSION         100    // Version of EEPROM struct
+#define VERSION         101    // Version of EEPROM struct
 #define SENSOR_DELAY    600    // In seconds, 600 = 10 minutes
-#define ELEMENTS 3             // How many elements this node has
+#define ELEMENTS 1             // How many elements this node has
 
 // Constants
 #define REG_LEN         21   // Size of one conf. element
@@ -44,6 +44,9 @@
 #ifdef HAS_RS485
 #define GATEWAYID       0    // RS485 Gateway
 #endif
+// Songs :]
+const char *melody = "Impossible:d=16,o=6,b=95:32d,32d#,32d,32d#,32d,32d#,32d,32d#,32d,32d,32d#,32e,32f,32f#,32g,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,a#,g,2d,32p,a#,g,2c#,32p,a#,g,2c,a#5,8c,2p,32p,a#5,g5,2f#,32p,a#5,g5,2f,32p,a#5,g5,2e,d#,8d";
+const char *song = "Imperial:d=4,o=5,b=120:32e,32e,32e,32c,32e,32g";
 // ChibiOS override
 #define SERIAL_BUFFERS_SIZE 128
 
@@ -74,9 +77,10 @@ BaseSequentialStream* console = (BaseSequentialStream*)&SD1;
 #endif
 
 // Global variables
-uint8_t mode = 0; // Authentication mode
+volatile uint8_t mode = 0; // Authentication mode
 #ifdef HAS_FINGERPRINT
-uint8_t finger[1536];
+#define MAX_FINGERPRINT_SIZE 1536
+uint8_t finger[MAX_FINGERPRINT_SIZE];
 uint8_t comm[1024*3];
 #endif
 
@@ -119,7 +123,7 @@ RS485Msg_t msg;
  */
 static THD_WORKING_AREA(waBlinkerThread, 256);
 static __attribute__((noreturn)) THD_FUNCTION(BlinkerThread, arg) {
-  (void)arg;
+  chRegSetThreadName(arg);
 
   systime_t time = 500;
 
@@ -185,7 +189,6 @@ int main(void) {
   // mailboxes
   chMBObjectInit(&rtttlMailbox, rtttlMailboxBuffer, 1);
 
-
   // Read configuration
   readFromFlash(&conf, sizeof(conf));
   DBG("Flash EEPROM start: 0x%08x\r\n", FLASH_EE_REGION);
@@ -193,8 +196,10 @@ int main(void) {
     setDefault();
     writeToFlash(&conf, sizeof(conf));
   }
+
   // Register this node
-  //sendConf();
+  sendConf();
+
   /*
    * Create the threads.
    */
@@ -224,13 +229,9 @@ int main(void) {
   chThdSleepMilliseconds(200);
   downloadTemplate();
 
-
-  chprintf(console, "Playing melody\r\n");
-  //const char *melody = "Impossible:d=16,o=6,b=95:32d,32d#,32d,32d#,32d,32d#,32d,32d#,32d,32d,32d#,32e,32f,32f#,32g,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,a#,g,2d,32p,a#,g,2c#,32p,a#,g,2c,a#5,8c,2p,32p,a#5,g5,2f#,32p,a#5,g5,2f,32p,a#5,g5,2e,d#,8d";
-
-  const char *song = "Imperial:d=4,o=5,b=120:32e,32e,32e,32c,32e,32g";
   chMBPostTimeout(&rtttlMailbox, (msg_t)song, TIME_INFINITE);
 
+  uint64_t test = 0;
   int8_t count = 0;
   while (true) {
     chThdSleepMilliseconds(2000);

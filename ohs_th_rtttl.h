@@ -28,7 +28,7 @@
  */
 static THD_WORKING_AREA(waRTTTLThread, 256);
 static THD_FUNCTION(RTTTLThread, arg) {
-  (void)arg;
+  chRegSetThreadName(arg);
   msg_t msg;
 
   while (true) {

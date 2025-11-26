@@ -5,6 +5,7 @@
  *      Author: vysocan
  */
 #include "rle.h"
+#include <string.h>
 /*
  * @brief Run-Length Encoding (RLE) Encoder
  *
@@ -22,7 +23,7 @@
  * Compressed:    0x82, 0xAA, 0x01, 0xBB, 0x81, 0xCC
  *
  * When then 7th bit of command is set, then the next byte in input is used to
- *   extend the count of repeat of literal to 14bits number (<16384).
+ *   extend the count of repeat or literal to 14bits number (<16384).
  *
  * Original data: 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, ... 95x 0xFF
  * Compressed:    0xC0, 0x64, 0xFF
@@ -64,10 +65,9 @@ uint16_t rle_compress(const uint8_t *in, uint16_t inLen, uint8_t *out) {
         out[outIdx++] = 0x40 | ((literalLen - 1) >> 8);
         out[outIdx++] = (literalLen - 1) & 0xFF;
       }
-      // 'repeat' here as temp. variable
-      for (repeat = 0; repeat < literalLen; repeat++) {
-        out[outIdx++] = in[start + repeat];
-      }
+      // Use memcpy for block copy
+      memcpy(&out[outIdx], &in[start], literalLen);
+      outIdx += literalLen;
     }
   }
   return outIdx;
@@ -82,7 +82,7 @@ uint16_t rle_compress(const uint8_t *in, uint16_t inLen, uint8_t *out) {
  * @return uint16_t Returns length of encoded output.
  */
 uint16_t rle_decompress(const uint8_t *in, uint16_t inLen, uint8_t *out) {
-  uint16_t outIdx = 0, inIdx = 0, i, count;
+  uint16_t outIdx = 0, inIdx = 0, count;
   uint8_t byte;
 
   while (inIdx < inLen) {
@@ -96,16 +96,15 @@ uint16_t rle_decompress(const uint8_t *in, uint16_t inLen, uint8_t *out) {
     }
     // Decide type
     if (byte & 0x80) {
-      // Repeat command
+      // Repeat command: use memset
       byte = in[inIdx++];
-      for (i = 0; i < count; i++) {
-        out[outIdx++] = byte;
-      }
+      memset(&out[outIdx], byte, count);
+      outIdx += count;
     } else {
-      // Literal command
-      for (i = 0; i < count; i++) {
-        out[outIdx++] = in[inIdx++];
-      }
+      // Literal command: use memcpy
+      memcpy(&out[outIdx], &in[inIdx], count);
+      inIdx += count;
+      outIdx += count;
     }
   }
   return outIdx;

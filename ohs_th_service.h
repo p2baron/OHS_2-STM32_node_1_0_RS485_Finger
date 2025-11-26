@@ -34,9 +34,9 @@ static THD_FUNCTION(ServiceThread, arg) {
     // reset counter every one hour
     if (counter == 3600) counter = 0;
 
-    // Ping
+    // Ping call every hour
     if (counter == 0) {
-      //ping();
+      ping();
     }
 
     // Sensor data

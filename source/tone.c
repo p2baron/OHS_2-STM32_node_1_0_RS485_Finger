@@ -72,9 +72,9 @@ void playNote(const char *note, uint16_t defaultDuration, uint8_t defaultOctave,
     uint16_t frequency = 0;
 
     // Parse duration if specified
-    if (isdigit(*note)) {
+    if (isdigit((uint8_t)*note)) {
         duration = 0;
-        while (isdigit(*note)) {
+        while (isdigit((uint8_t)*note)) {
             duration = duration * 10 + (*note - '0');
             note++;
         }
@@ -103,7 +103,7 @@ void playNote(const char *note, uint16_t defaultDuration, uint8_t defaultOctave,
         note++;
     }
     // Parse octave if specified
-    if (isdigit(*note)) {
+    if (isdigit((uint8_t)*note)) {
         octave = *note - '0';
         note++;
     }

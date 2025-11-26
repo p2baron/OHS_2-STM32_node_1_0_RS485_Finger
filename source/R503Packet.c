@@ -23,9 +23,9 @@ SerialDriver* r503sdp;
 uint8_t headBuffer[9];
 uint8_t checksumBuffer[2];
 /*
- * GPRS default configuration
+ * R503 default configuration
  */
-static SerialConfig sd_cfg = {
+static SerialConfig rs503_cfg = {
   57600,
   0, 0, 0
 };
@@ -35,10 +35,13 @@ static SerialConfig sd_cfg = {
 void R503PacketInit(SerialDriver* sdp) {
   r503sdp = sdp;
 
-  sdStart(r503sdp, &sd_cfg);
+  sdStart(r503sdp, &rs503_cfg);
 }
 /*
+ * @brief Calculates the checksum for the given R503 packet.
  *
+ * @param packet Pointer to the R503Packet_t structure for which the checksum is to be calculated.
+ * @return None. The checksum is stored in the 'checksum' field of the packet structure.
  */
 void calculateChecksum(R503Packet_t* packet) {
   packet->checksum = packet->type;
@@ -49,7 +52,10 @@ void calculateChecksum(R503Packet_t* packet) {
   }
 }
 /*
+ * @brief Validates the checksum of the given R503 packet.
  *
+ * @param packet Pointer to the R503Packet_t structure to be validated.
+ * @return true if the checksum is valid, false otherwise.
  */
 bool isChecksumValid(R503Packet_t* packet) {
     uint16_t original = packet->checksum;
@@ -61,6 +67,11 @@ bool isChecksumValid(R503Packet_t* packet) {
     return false;
 }
 /*
+ * @brief Sends a packet to the R503 fingerprint sensor module.
+ *
+ * @param packet The packet to be sent.
+ * @return uint8_t Returns R503_OK if the packet is sent successfully, otherwise returns an error code.
+ *        Possible error codes are
  * R503_OK 0x00 - Successful sending
  * R503_TIMEOUT 0xE9 - Timeout error
  */

@@ -10,7 +10,7 @@
 
 #ifdef HAS_RS485
 
-#define RS485_DEBUG 0
+#define RS485_DEBUG 1
 
 #if RS485_DEBUG
 #define DBG_RS485(...) {chprintf(console, __VA_ARGS__);}
@@ -90,7 +90,6 @@ static THD_FUNCTION(RS485Thread, arg) {
     (void)evt;
 
     eventflags_t flags = chEvtGetAndClearFlags(&serialListener);
-    DBG_RS485("%u: ", chVTGetSystemTime());
     DBG_RS485("RS485 flag: %u, state: %u, length: %u\r\n", flags, RS485D3.trcState, RS485D3.ibHead);
     //resp = chBSemWait(&RS485D3.received);
     if ((flags & RS485_MSG_RECEIVED) ||
@@ -131,6 +130,7 @@ static THD_FUNCTION(RS485Thread, arg) {
               // Save it to EEPROM
               conf.version = VERSION;
               writeToFlash(&conf, sizeof(conf));
+              DBG_RS485("RS485: Reg. updated at pos %u\r\n", temp);
             }
           }
         } // data

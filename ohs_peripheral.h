@@ -64,7 +64,7 @@ static SerialConfig serialCfg = {
 #ifdef HAS_RS485
 static RS485Config rs485cfg = {
   19200,    // speed
-  7,        // address
+  1,        // address
   GPIOB,    // port
   GPIOB_DE3 // pad
 };
