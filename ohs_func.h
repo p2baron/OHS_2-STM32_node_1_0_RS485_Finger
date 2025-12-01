@@ -21,6 +21,11 @@ union u_tag {
   uint8_t b[4];
   float   fval;
 } u;
+// time_t conversion
+union time_tag {
+  char   ch[4];
+  time_t val;
+} timeConv;
 /*
  * Add float value to message
  */
@@ -118,8 +123,9 @@ void searchFinger(void) {
   R503SetAuraLED(aLEDBreathing, aLEDBlue, 50, 255);
 
   while (true) {
+	DBG_FUNC(" >> Waiting for finger...\r\nTime: %u", chVTGetSystemTime());
     ret = R503TakeImage();
-    DBG_FUNC(" ret %d,", ret);
+    DBG_FUNC(" ret %d, time: %u", ret, chVTGetSystemTime());
 
     if (ret == R503_NO_FINGER) {
       chThdSleepMilliseconds(250);

@@ -10,7 +10,7 @@
 
 #ifdef HAS_RS485
 
-#define RS485_DEBUG 1
+#define RS485_DEBUG 0
 
 #if RS485_DEBUG
 #define DBG_RS485(...) {chprintf(console, __VA_ARGS__);}
@@ -73,7 +73,7 @@ void sendValue(uint8_t element, float value) {
 /*
  * RS485 thread
  */
-static THD_WORKING_AREA(waRS485Thread, 1024);
+static THD_WORKING_AREA(waRS485Thread, 512);
 static THD_FUNCTION(RS485Thread, arg) {
   chRegSetThreadName(arg);
   event_listener_t serialListener;
@@ -119,6 +119,7 @@ static THD_FUNCTION(RS485Thread, arg) {
         }
         // Data
         if (rs485Msg.ctrl == RS485_FLAG_DTA) {
+          // Registration
           if (rs485Msg.data[0] == 'R') {
             temp = 0;
             while (((conf.reg[temp] != rs485Msg.data[1]) || (conf.reg[temp+1] != rs485Msg.data[2]) ||
@@ -132,6 +133,13 @@ static THD_FUNCTION(RS485Thread, arg) {
               writeToFlash(&conf, sizeof(conf));
               DBG_RS485("RS485: Reg. updated at pos %u\r\n", temp);
             }
+          }
+          // Time beacon
+          else if (rs485Msg.data[0] == 'T') {
+            memcpy(&timeConv.ch[0], &rs485Msg.data[1], 4);
+            //convertUnixSecondToRTCDateTime(&timespec, timeConv.val);
+            rtcSetTime(&RTCD1, &timespec);
+            //DBG_RS485("RS485: Time updated to %u\r\n", timeConv.val);
           }
         } // data
       } // MSG_OK

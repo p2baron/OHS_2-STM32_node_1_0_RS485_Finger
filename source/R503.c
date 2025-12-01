@@ -113,7 +113,6 @@ uint8_t R503ReceiveData(uint8_t* toSend, uint8_t sendSize, uint8_t sendType,
 
     if (ret != R503_OK) return ret;
 
-    //memcpy(toReceive + pos, in.payload, in.length);
     *size += in.length;
     DBG("size %d, size %d, type %d \r\n", *size, in.length, in.type);
   } while (in.type == R503_PKT_DATA_START);

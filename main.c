@@ -1,25 +1,20 @@
 /*
-    ChibiOS - Copyright (C) 2006..2018 Giovanni Di Sirio
-
-    Licensed under the Apache License, Version 2.0 (the "License");
-    you may not use this file except in compliance with the License.
-    You may obtain a copy of the License at
-
-        http://www.apache.org/licenses/LICENSE-2.0
-
-    Unless required by applicable law or agreed to in writing, software
-    distributed under the License is distributed on an "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    See the License for the specific language governing permissions and
-    limitations under the License.
-*/
-
+ * OHS node - finger print authentication
+ * vysocan 2025
+ *
+ *
+ */
 // Node definitions
 #define HAS_SERIAL1
 //#define HAS_RADIO
 #define HAS_RS485
 #define HAS_FINGERPRINT
 #define DEBUG
+
+// Sanity checks
+#if defined(HAS_RADIO) && defined(HAS_RS485)
+#error "Should not define both HAS_RADIO and HAS_RS485"
+#endif
 
 #ifdef DEBUG
 #define DBG(...) {chprintf(console, __VA_ARGS__);}
@@ -30,7 +25,7 @@
 // This node settings
 #define VERSION         101    // Version of EEPROM struct
 #define SENSOR_DELAY    600    // In seconds, 600 = 10 minutes
-#define ELEMENTS 1             // How many elements this node has
+#define ELEMENTS        1      // How many elements this node has
 
 // Constants
 #define REG_LEN         21   // Size of one conf. element
@@ -68,9 +63,6 @@ const char *song = "Imperial:d=4,o=5,b=120:32e,32e,32e,32c,32e,32g";
 BaseSequentialStream* console = (BaseSequentialStream*)&SD1;
 #endif
 
-
-//#include "usbcfg.h"
-
 // RFM69
 #ifdef HAS_RADIO
 #include "rfm69.h"
@@ -78,6 +70,9 @@ BaseSequentialStream* console = (BaseSequentialStream*)&SD1;
 
 // Global variables
 volatile uint8_t mode = 0; // Authentication mode
+// RTC related
+static RTCDateTime timespec;
+// Fingerprint
 #ifdef HAS_FINGERPRINT
 #define MAX_FINGERPRINT_SIZE 1536
 uint8_t finger[MAX_FINGERPRINT_SIZE];
@@ -104,6 +99,7 @@ static msg_t rtttlMailboxBuffer[1]; // Storage for one message (pointer)
 #include "ohs_func.h"
 #include "eeprom2flash.h"
 #include "tone.h"
+#include "date_time.h"
 
 // Thread handling
 #ifdef HAS_RADIO
@@ -117,23 +113,7 @@ RS485Msg_t msg;
 // other threads
 #include "ohs_th_service.h"
 #include "ohs_th_rtttl.h"
-
-/*
- * Blinker thread, times are in milliseconds.
- */
-static THD_WORKING_AREA(waBlinkerThread, 256);
-static __attribute__((noreturn)) THD_FUNCTION(BlinkerThread, arg) {
-  chRegSetThreadName(arg);
-
-  systime_t time = 500;
-
-  while (true) {
-    palClearPad(GPIOC, GPIOC_LED);
-    chThdSleepMilliseconds(time);
-    palSetPad(GPIOC, GPIOC_LED);
-    chThdSleepMilliseconds(time);
-  }
-}
+#include "ohs_th_blinker.h"
 /*
  * Application entry point.
  */
@@ -196,10 +176,6 @@ int main(void) {
     setDefault();
     writeToFlash(&conf, sizeof(conf));
   }
-
-  // Register this node
-  sendConf();
-
   /*
    * Create the threads.
    */
@@ -223,15 +199,17 @@ int main(void) {
 	chThdSleepMilliseconds(2000);
   }
 
+  // Register this node
+  sendConf();
+
   //enrollFinger();
   chThdSleepMilliseconds(200);
   searchFinger();
   chThdSleepMilliseconds(200);
   downloadTemplate();
 
-  chMBPostTimeout(&rtttlMailbox, (msg_t)song, TIME_INFINITE);
+  chMBPostTimeout(&rtttlMailbox, (msg_t)melody, TIME_INFINITE);
 
-  uint64_t test = 0;
   int8_t count = 0;
   while (true) {
     chThdSleepMilliseconds(2000);
