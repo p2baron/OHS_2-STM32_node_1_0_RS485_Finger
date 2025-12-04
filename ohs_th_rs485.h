@@ -10,7 +10,7 @@
 
 #ifdef HAS_RS485
 
-#define RS485_DEBUG 0
+#define RS485_DEBUG 1
 
 #if RS485_DEBUG
 #define DBG_RS485(...) {chprintf(console, __VA_ARGS__);}
@@ -27,7 +27,7 @@ void sendConf(void){
   // Wait some time to avoid contention
   chThdSleepMilliseconds(rs485cfg.address * 1000);
 
-  DBG_RS485("Conf:");
+  DBG_RS485("Send Conf:");
 
   pos = 0;
   msg.address = 0;
@@ -43,7 +43,7 @@ void sendConf(void){
     pos += REG_LEN;
   }
 
-  DBG_RS485(".");
+  DBG_RS485("\r\n");
 }
 /*
  * Ping
@@ -137,9 +137,11 @@ static THD_FUNCTION(RS485Thread, arg) {
           // Time beacon
           else if (rs485Msg.data[0] == 'T') {
             memcpy(&timeConv.ch[0], &rs485Msg.data[1], 4);
-            //convertUnixSecondToRTCDateTime(&timespec, timeConv.val);
+            convertUnixSecondToRTCDateTime(&timespec, timeConv.val);
             rtcSetTime(&RTCD1, &timespec);
-            //DBG_RS485("RS485: Time updated to %u\r\n", timeConv.val);
+            DBG_RS485("RS485: Time updated to %u\r\n", timeConv.val);
+            rtcGetTime(&RTCD1, &timespec);
+            DBG_RS485("RTC: Time updated to %u\r\n", convertRTCDateTimeToUnixSecond(&timespec));
           }
         } // data
       } // MSG_OK

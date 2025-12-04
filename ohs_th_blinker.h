@@ -11,7 +11,7 @@
 /*
  * Blinker thread, times are in milliseconds.
  */
-static THD_WORKING_AREA(waBlinkerThread, 128);
+static THD_WORKING_AREA(waBlinkerThread, 256);
 static __attribute__((noreturn)) THD_FUNCTION(BlinkerThread, arg) {
   chRegSetThreadName(arg);
 

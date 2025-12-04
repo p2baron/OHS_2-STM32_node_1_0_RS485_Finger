@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 // Helper to allocate worst compression length
-#define MAX_OUT_LEN(in) ((in/4*5)+(in%4+1))
+#define MAX_OUT_LEN(in) ((in) + ((in) / 2) + 4)
 
 // Defines
 #define MAX_14_BIT (0x4000)

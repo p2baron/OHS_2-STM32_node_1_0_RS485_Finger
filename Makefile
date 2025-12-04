@@ -5,7 +5,7 @@
 
 # Compiler options here.
 ifeq ($(USE_OPT),)
-  USE_OPT = -O0 -ggdb -fomit-frame-pointer -falign-functions=16
+  USE_OPT = -O0 -ggdb -fomit-frame-pointer -falign-functions=16 -ffunction-sections -fdata-sections
 endif
 
 # C specific options here (added to USE_OPT).
@@ -24,13 +24,14 @@ ifeq ($(USE_LINK_GC),)
 endif
 
 # Linker extra options here.
+# debug: --gc-sections --print-gc-sections
 ifeq ($(USE_LDOPT),)
-  USE_LDOPT = 
+  USE_LDOPT = --gc-sections
 endif
 
 # Enable this if you want link time optimizations (LTO).
 ifeq ($(USE_LTO),)
-  USE_LTO = yes
+  USE_LTO = no
 endif
 
 # Enable this if you want to see the full log while compiling.
@@ -122,6 +123,7 @@ LDSCRIPT= $(STARTUPLD)/STM32F103xB.ld
 # setting.
 CSRC = $(ALLCSRC) \
        $(TESTSRC) \
+       syscalls_minimal.c \
        main.c
 #$(CHIBIOS)/os/various/syscalls.c \       
 

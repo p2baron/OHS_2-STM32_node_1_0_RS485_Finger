@@ -76,7 +76,7 @@ static RTCDateTime timespec;
 #ifdef HAS_FINGERPRINT
 #define MAX_FINGERPRINT_SIZE 1536
 uint8_t finger[MAX_FINGERPRINT_SIZE];
-uint8_t comm[1024*3];
+uint8_t comm[MAX_OUT_LEN(MAX_FINGERPRINT_SIZE)];
 #endif
 
 // Configuration struct
@@ -202,13 +202,13 @@ int main(void) {
   // Register this node
   sendConf();
 
-  //enrollFinger();
+  enrollFinger();
   chThdSleepMilliseconds(200);
   searchFinger();
   chThdSleepMilliseconds(200);
   downloadTemplate();
 
-  chMBPostTimeout(&rtttlMailbox, (msg_t)melody, TIME_INFINITE);
+  chMBPostTimeout(&rtttlMailbox, (msg_t)song, TIME_INFINITE);
 
   int8_t count = 0;
   while (true) {
