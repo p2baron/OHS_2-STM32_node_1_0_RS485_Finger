@@ -27,8 +27,11 @@ static PWMConfig pwmcfg = {
 };
 // PWM driver pointer
 static PWMDriver *pwm_driver;
+//
+static uint8_t isPlaying = 0;
 /*
  * Function to initialize tone generation
+ *
  */
 void toneInit(void) {
   // Set the pin mode to PWM
@@ -39,13 +42,11 @@ void toneInit(void) {
 }
 /*
  * Function to play tone at specified frequency (Hz) for specified duration (ms)
+ * @param frequency Frequency in Hz
+ * @param duration Duration in milliseconds (0 for indefinite)
+ *
  */
 void tone(uint16_t frequency, uint16_t duration) {
-  if (frequency == 0) {
-      noTone();
-      return;
-  }
-
   uint32_t period = 1000000 / frequency;
   pwmcfg.period = period;
 
@@ -59,12 +60,18 @@ void tone(uint16_t frequency, uint16_t duration) {
 }
 /*
  * Function to stop playing tone
+ * @
  */
 void noTone(void) {
   pwmDisableChannel(pwm_driver, 0);
 }
 /*
  * Function to play a single note
+ * @param note Note string (e.g., "c#", "d4", "p", etc.)
+ * @param defaultDuration Default duration if not specified in note
+ * @param defaultOctave Default octave if not specified in note
+ * @param bpm Beats per minute for duration calculation
+ *
  */
 void playNote(const char *note, uint16_t defaultDuration, uint8_t defaultOctave, uint16_t bpm) {
     uint16_t duration = defaultDuration;
@@ -127,6 +134,8 @@ void playNote(const char *note, uint16_t defaultDuration, uint8_t defaultOctave,
 }
 /*
  * Function to play RTTTL melody
+ * @param rtttl RTTTL string
+ *
  */
 void playRTTTL(const char *rtttl) {
     // RTTTL default parameters
@@ -140,6 +149,8 @@ void playRTTTL(const char *rtttl) {
 	uint8_t LEDrepeat = 3;
 	// Pointer to traverse the RTTTL string
 	const char *p = rtttl;
+	// Let's mark that we are playing
+	isPlaying = 1;
 
     // Parse LED header
     while (*p && *p != ':') {
@@ -187,4 +198,15 @@ void playRTTTL(const char *rtttl) {
         while (*p && *p != ',') p++;
         if (*p == ',') p++;
     }
+
+	// Let's mark that we are done playing
+	isPlaying = 0;
+}
+/*
+ * Function to check if tone is playing
+ * @return 1 if tone is playing, 0 otherwise
+ *
+ */
+bool isTonePlaying(void) {
+	return isPlaying ? true : false;
 }

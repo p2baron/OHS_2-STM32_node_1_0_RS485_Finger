@@ -16,6 +16,9 @@
 #define DBG_FUNC(...)
 #endif
 
+#define FEATURE_COUNT 6 // Number of image(s) taken (1-6) for new enrollment
+#define CHAR_BUFFER   1 // Number of character buffers used in R503 (1 or 2)
+
 // Float conversion
 union u_tag {
   uint8_t b[4];
@@ -36,32 +39,29 @@ void addFloatVal(uint8_t element, uint8_t *out, float value){
   memcpy(&out[2], &u.b[0], 4);
 }
 /*
- *
+ * @brief Enroll finger at location
+ * @param location Location in the library
  */
-void enrollFinger(void) {
+uint8_t enrollFinger(uint16_t location) {
   uint8_t ret;
 
-  uint8_t featureCount = 6;
-  uint16_t location = 1;
-
-  for (int i = 1; i <= featureCount; i++)   {
+  for (int i = 1; i <= FEATURE_COUNT; i++)   {
     R503SetAuraLED(aLEDBreathing, aLEDBlue, 50, 255);
     DBG_FUNC(">> Place finger on sensor...\r\n");
     while (true) {
-      chThdSleepMilliseconds(1000);
-      ret = R503TakeImage();
-      DBG_FUNC(" ret %d,", ret);
+      chThdSleepMilliseconds(200);
 
+      ret = R503TakeImage();
       if (ret == R503_NO_FINGER) {
         continue; // try again
       } else if (ret == R503_OK) {
-		DBG_FUNC(" >> Image %d of %d taken \r\n", i, featureCount);
+		DBG_FUNC(" >> Image %d of %d taken \r\n", i, FEATURE_COUNT);
         R503SetAuraLED(aLEDBreathing, aLEDWhite, 255, 255);
         // Go for feature extraction
       } else {
 		DBG_FUNC("[X] Could not take image (code: 0x%02X)\r\n", ret);
         R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-        chThdSleepMilliseconds(1000);
+        chThdSleepMilliseconds(100);
         continue; // try again
       }
 
@@ -69,14 +69,14 @@ void enrollFinger(void) {
       DBG_FUNC(" ef-ret %d,", ret);
 
       if (ret != R503_OK) {
-        DBG_FUNC("[X] Failed to extract features, trying again (code: 0x%02X)\r\n", ret);
+        DBG_FUNC("Failed to extract image, trying again (code: 0x%02X)\r\n", ret);
         R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-        chThdSleepMilliseconds(1000);
+        chThdSleepMilliseconds(100);
         continue;
       }
       R503SetAuraLED(aLEDBreathing, aLEDGreen, 255, 255);
-	  DBG_FUNC(" >> Features %d of %d extracted\r\n", i, featureCount);
-      chThdSleepMilliseconds(250);
+	  DBG_FUNC(">> Image %d of %d extracted\r\n", i, FEATURE_COUNT);
+      chThdSleepMilliseconds(100);
       break;
     }
 
@@ -94,7 +94,7 @@ void enrollFinger(void) {
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to create a template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-    return;
+    return ret;
   } else {
     DBG_FUNC(" >> Template created\r\n");
   }
@@ -104,12 +104,12 @@ void enrollFinger(void) {
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-    return;
+    return ret;
   }
-  chThdSleepMilliseconds(250);
 
   R503SetAuraLED(aLEDBreathing, aLEDGreen, 255, 1);
   DBG_FUNC(" >> Template stored at location: %d\r\n", location);
+  return R503_OK;
 }
 /*
  * @brief Search for finger in library
@@ -166,54 +166,83 @@ void searchFinger(void) {
   }
 }
 /*
+ * @brief Download fingerprint template
+ * @param location Location in the library
+ * @param image Pointer to store the image
+ * @param size Size of the image
+ * @return R503_OK on success, error code otherwise
  *
  */
-void downloadTemplate(void) {
+#define CHAR_BUFFER 1
+uint8_t downloadTemplate(uint16_t location, uint8_t* image, uint16_t* size) {
   uint8_t ret;
-  uint16_t location = 1, size;
 
   DBG_FUNC(" >> Retrieving...\r\n");
-  ret = R503GetTemplate(1, location);
+  ret = R503GetTemplate(CHAR_BUFFER, location);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to retrieve the template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-    return;
+    return ret;
   }
 
-  memset(&finger[0], 0x55, sizeof(finger));
+  memset(&finger[0], 0x55, MAX_FINGERPRINT_SIZE); // Clear buffer
 
   DBG_FUNC(" >> Downloading...\r\n");
-  ret = R503UploadTemplate(1, &finger[0], &size);
+  ret = R503UploadTemplate(CHAR_BUFFER, image, size);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to download the template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-    return;
+    return ret;
   }
 
-  //chThdSleepMilliseconds(250);
+  return R503_OK;
+}
+/*
+ *
+ */
+uint8_t uploadTemplate(uint16_t location, uint8_t *image, uint16_t size) {
+	uint8_t ret;
 
-  for (uint16_t var = 0; var < size; ++var) {
-    DBG_FUNC("%02X ", finger[var]);
-  }
-  DBG_FUNC("\r\n");
+	DBG_FUNC(" >> Uploading...\r\n");
+	ret = R503DownloadTemplate(CHAR_BUFFER, image, size);
+	if (ret != R503_OK) {
+		DBG_FUNC("[X] Failed to upload the template (code: 0x%02X)\r\n", ret);
+		R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+		return ret;
+	}
 
-  DBG_FUNC("compressing\r\n");
-  uint16_t commpressed = rle_compress(&finger[0], size, &comm[0]);
-  DBG_FUNC("compress size %d\r\n", commpressed);
-  for (uint16_t var = 0; var < commpressed; ++var) {
-    DBG_FUNC("%02X ", comm[var]);
-  }
-  DBG_FUNC("\r\n");
+	DBG_FUNC(" >> Storing...\r\n");
+	ret = R503StoreTemplate(CHAR_BUFFER, location);
+	if (ret != R503_OK) {
+		DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
+		R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+		return ret;
+	}
 
-  DBG_FUNC("de-compressing\r\n");
-
-  uint16_t decommpressed = rle_decompress(&comm[0], commpressed, &finger[0]);
-
-  DBG_FUNC("decompress size %d\r\n", decommpressed);
-  for (uint16_t var = 0; var < decommpressed; ++var) {
-	DBG_FUNC("%02X ", finger[var]);
-  }
-  DBG_FUNC("\r\n");
+	return R503_OK;
+}
+//  for (uint16_t var = 0; var < size; ++var) {
+//    DBG_FUNC("%02X ", finger[var]);
+//  }
+//  DBG_FUNC("\r\n");
+//
+//  DBG_FUNC("compressing\r\n");
+//  uint16_t commpressed = rle_compress(&finger[0], size, &comm[0]);
+//  DBG_FUNC("compress size %d\r\n", commpressed);
+//  for (uint16_t var = 0; var < commpressed; ++var) {
+//    DBG_FUNC("%02X ", comm[var]);
+//  }
+//  DBG_FUNC("\r\n");
+//
+//  DBG_FUNC("de-compressing\r\n");
+//
+//  uint16_t decommpressed = rle_decompress(&comm[0], commpressed, &finger[0]);
+//
+//  DBG_FUNC("decompress size %d\r\n", decommpressed);
+//  for (uint16_t var = 0; var < decommpressed; ++var) {
+//	DBG_FUNC("%02X ", finger[var]);
+//  }
+//  DBG_FUNC("\r\n");
 
 //  chThdSleepMilliseconds(250);
 
@@ -243,6 +272,5 @@ void downloadTemplate(void) {
 //    return;
 //  }
 //  chThdSleepMilliseconds(250);
-}
 
 #endif /* OHS_FUNC_H_ */

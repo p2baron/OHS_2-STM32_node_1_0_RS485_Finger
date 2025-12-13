@@ -81,6 +81,7 @@ static THD_FUNCTION(RS485Thread, arg) {
   msg_t resp;
   RS485Msg_t rs485Msg;
   uint8_t temp;
+  uint16_t size = 0;
 
   // Register
   chEvtRegister((event_source_t *)&RS485D3.event, &serialListener, EVENT_MASK(0));
@@ -119,8 +120,8 @@ static THD_FUNCTION(RS485Thread, arg) {
         }
         // Data
         if (rs485Msg.ctrl == RS485_FLAG_DTA) {
-          // Registration
           if (rs485Msg.data[0] == 'R') {
+        	// Registration
             temp = 0;
             while (((conf.reg[temp] != rs485Msg.data[1]) || (conf.reg[temp+1] != rs485Msg.data[2]) ||
                     (conf.reg[temp+2] != rs485Msg.data[3])) && (temp < sizeof(conf.reg))) {
@@ -136,12 +137,41 @@ static THD_FUNCTION(RS485Thread, arg) {
           }
           // Time beacon
           else if (rs485Msg.data[0] == 'T') {
+        	// Time beacon
             memcpy(&timeConv.ch[0], &rs485Msg.data[1], 4);
             convertUnixSecondToRTCDateTime(&timespec, timeConv.val);
             rtcSetTime(&RTCD1, &timespec);
             DBG_RS485("RS485: Time updated to %u\r\n", timeConv.val);
             rtcGetTime(&RTCD1, &timespec);
             DBG_RS485("RTC: Time updated to %u\r\n", convertRTCDateTimeToUnixSecond(&timespec));
+          } else if (rs485Msg.data[0] == 'F') {
+            // Fingerprint
+            DBG_RS485("RS485: Fingerprint command received\r\n");
+            switch (rs485Msg.data[1]) {
+                case 'E': // Enroll
+                    enrollFinger((uint16_t)rs485Msg.data[2]);
+                    break;
+                case 'G': // Get template
+                	temp = downloadTemplate((uint16_t)rs485Msg.data[2], &finger[0], &fingerSize);
+                	if (temp == R503_OK) {
+                		DBG_RS485("RS485: Fingerprint template downloaded, size %u\r\n", fingerSize);
+                	}
+                	// Compress template
+                	size = rle_compress(&finger[0], fingerSize, &commpressed[0]);
+                	if (size > fingerSize) {
+
+                	} else {
+
+                	}
+                	// To be implemented: send template back to gateway
+                    break;
+                case 'S': // Save template
+                	// To be implemented: receive template from gateway and save to location
+                	temp = uploadTemplate((uint16_t)rs485Msg.data[2], &finger[0], fingerSize);
+                    break;
+                default:
+                    break;
+            }
           }
         } // data
       } // MSG_OK

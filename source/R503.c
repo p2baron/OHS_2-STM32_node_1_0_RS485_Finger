@@ -601,9 +601,9 @@ uint8_t R503GetTemplate(uint8_t charBuffer, uint16_t location) {
   return data[0];
 }
 /**
- * @brief Downloads a template from the R503 fingerprint sensor to the MCU.
+ * @brief Uploads a template from the R503 fingerprint sensor to the MCU.
  *
- * @param charBuffer The character buffer to download the template from.
+ * @param charBuffer The character buffer to upload the template from.
  * @param template Pointer to the image data to be uploaded.
  * @param size The size of the template data.
  *
@@ -617,7 +617,7 @@ uint8_t R503UploadTemplate(uint8_t charBuffer, uint8_t* template, uint16_t* size
   return R503ReceiveData(&send[0], 2, R503_PKT_COMMAND, template, size);
 }
 /**
- * @brief Uploads a template to the specified character buffer on R503
+ * @brief Downloads a template to the specified character buffer on R503
  *
  * @param charBuffer The character buffer to upload the template to.
  * @param template The template data to upload.
@@ -765,8 +765,8 @@ uint8_t R503SearchFinger(uint8_t charBuffer, uint16_t* location, uint16_t* confi
 
   send[0] = 0x04;
   send[1] = charBuffer;
-  send[2] = 0;
-  send[3] = 0;
+  send[2] = 0; // Start location
+  send[3] = 0; // Num
   send[4] = r503.params.fingerLibrarySize >> 8;
   send[5] = r503.params.fingerLibrarySize & 0xFF;
 

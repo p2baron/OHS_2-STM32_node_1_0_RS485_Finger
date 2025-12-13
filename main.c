@@ -40,6 +40,11 @@
 #define GATEWAYID       0    // RS485 Gateway
 #endif
 // Songs :]
+const char *song_ok = "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p";
+const char *song_auth0 = "m=1,c=1,s=250,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p,p,p";
+const char *song_auth1 = "m=1,c=1,s=200,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p";
+const char *song_auth2 = "m=1,c=1,s=150,r=0:d=4,o=5,b=140:c,p,p,p,p";
+const char *song_auth3 = "m=1,c=1,s=100,r=0:d=4,o=5,b=140:c,p,p";
 const char *melody = "Impossible:d=16,o=6,b=95:32d,32d#,32d,32d#,32d,32d#,32d,32d#,32d,32d,32d#,32e,32f,32f#,32g,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,a#,g,2d,32p,a#,g,2c#,32p,a#,g,2c,a#5,8c,2p,32p,a#5,g5,2f#,32p,a#5,g5,2f,32p,a#5,g5,2e,d#,8d";
 const char *song = "Imperial:d=4,o=5,b=120:32e,32e,32e,32c,32e,32g";
 // ChibiOS override
@@ -75,8 +80,9 @@ static RTCDateTime timespec;
 // Fingerprint
 #ifdef HAS_FINGERPRINT
 #define MAX_FINGERPRINT_SIZE 1536
+uint16_t fingerSize = 0;
 uint8_t finger[MAX_FINGERPRINT_SIZE];
-uint8_t comm[MAX_OUT_LEN(MAX_FINGERPRINT_SIZE)];
+uint8_t commpressed[MAX_FINGERPRINT_SIZE + 4 + (MAX_FINGERPRINT_SIZE /2)];
 #endif
 
 // Configuration struct
@@ -186,12 +192,12 @@ int main(void) {
   chThdCreateStatic(waRS485Thread, sizeof(waRS485Thread), NORMALPRIO, RS485Thread, (void*)"rs485");
 #endif
   chThdCreateStatic(waServiceThread, sizeof(waServiceThread), NORMALPRIO-1, ServiceThread, (void*)"service");
-  chThdCreateStatic(waBlinkerThread, sizeof(waBlinkerThread), NORMALPRIO, BlinkerThread, (void*)"blinker");
+  chThdCreateStatic(waBlinkerThread, sizeof(waBlinkerThread), NORMALPRIO-2, BlinkerThread, (void*)"blinker");
   chThdCreateStatic(waRTTTLThread, sizeof(waRTTTLThread), NORMALPRIO, RTTTLThread, (void*)"rtttl");
 
-  // Normal main() thread activity, spawning shells.
+  // Initialize tone generation
   toneInit();
-
+  // Initialize fingerprint sensor
   while (R503Start() != R503_OK) {
 	#ifdef HAS_SERIAL1
 	  chprintf(console, "FP Init error!\r\n");
@@ -202,21 +208,27 @@ int main(void) {
   // Register this node
   sendConf();
 
-  enrollFinger();
-  chThdSleepMilliseconds(200);
-  searchFinger();
-  chThdSleepMilliseconds(200);
-  downloadTemplate();
+  chMBPostTimeout(&rtttlMailbox, (msg_t)song_auth0, TIME_IMMEDIATE);
 
-  chMBPostTimeout(&rtttlMailbox, (msg_t)song, TIME_INFINITE);
-
-  int8_t count = 0;
+  uint8_t ret;
+  uint16_t location, confidence;
   while (true) {
-    chThdSleepMilliseconds(2000);
-    if (count == 5) count = 0;
+    // Read fingerprint
+	ret = R503TakeImage();
+	if (ret == R503_OK) {
+	  ret = R503ExtractFeatures(1);
+	  if (ret != R503_OK) {
+		continue;
+	  } else {
+	  	ret = R503SearchFinger(1, &location, &confidence);
+		if (ret == R503_OK) {
 
-
-    chThdSleepMilliseconds(2000);
-    R503SetAuraLED(aLEDBreathing, count, 200, 1);
+		  chprintf(console," >> Found finger, ");
+		  chprintf(console,"ID: %d, ", location);
+		  chprintf(console,"Confidence: %d\r\n", confidence);
+		}
+	  }
+	}
+	chThdSleepMilliseconds(100);
   }
 }
