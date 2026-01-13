@@ -32,9 +32,9 @@ void sendConf(void){
   DBG_RADIO("Conf:");
 
   while (count < sizeof(conf.reg)) {
-    msg[0] = 'R'; // Registration flag
-    memcpy(&msg[1], &conf.reg[count], REG_LEN);
-    result = rfm69SendWithRetry(GATEWAYID, &msg[0], REG_LEN + 1, MSG_REPEAT);
+    msgOut[0] = 'R'; // Registration flag
+    memcpy(&msgOut[1], &conf.reg[count], REG_LEN);
+    result = rfm69SendWithRetry(GATEWAYID, &msgOut[0], REG_LEN + 1, MSG_REPEAT);
     DBG_RADIO(" %d",result);
 
     count += REG_LEN;
@@ -46,21 +46,21 @@ void sendConf(void){
  * Ping
  */
 void ping(void){
-  msg[0] = 'C';
-  msg[1] = 2; // Ping
-  rfm69SendWithRetry(GATEWAYID, &msg[0], 2, MSG_REPEAT);
+  msgOut[0] = 'C';
+  msgOut[1] = 2; // Ping
+  rfm69SendWithRetry(GATEWAYID, &msgOut[0], 2, MSG_REPEAT);
 }
 /*
  * Send float value of one element to gateway
  */
 void sendValue(uint8_t element, float value){
   u.fval = value;
-  msg[0] = conf.reg[(REG_LEN*element)];
-  msg[1] = conf.reg[1+(REG_LEN*element)];
-  msg[2] = conf.reg[2+(REG_LEN*element)];
-  memcpy(&msg[3], &u.b[0], 4);
+  msgOut[0] = conf.reg[(REG_LEN*element)];
+  msgOut[1] = conf.reg[1+(REG_LEN*element)];
+  msgOut[2] = conf.reg[2+(REG_LEN*element)];
+  memcpy(&msgOut[3], &u.b[0], 4);
   // Send to GW
-  rfm69SendWithRetry(GATEWAYID, msg, 7, MSG_REPEAT);
+  rfm69SendWithRetry(GATEWAYID, msgOut, 7, MSG_REPEAT);
   rfm69Sleep();
 }
 /*

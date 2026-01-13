@@ -8,19 +8,6 @@
 #ifndef REG_DEFAULTS_H_
 #define REG_DEFAULTS_H_
 
-// Node commands
-#define NODE_CMD_ACK          0
-#define NODE_CMD_REGISTRATION 1
-#define NODE_CMD_PING         2
-#define NODE_CMD_PONG         3
-#define NODE_CMD_ARMING       10
-#define NODE_CMD_ALARM        11
-#define NODE_CMD_AUTH_1       12
-#define NODE_CMD_AUTH_2       13
-#define NODE_CMD_AUTH_3       14
-#define NODE_CMD_ARMED_AWAY   15
-#define NODE_CMD_DISARM       16
-#define NODE_CMD_ARMED_HOME   17
 /*
  * Set defaults on first time
  */

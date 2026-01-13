@@ -19,22 +19,90 @@
 #define FEATURE_COUNT 6 // Number of image(s) taken (1-6) for new enrollment
 #define CHAR_BUFFER   1 // Number of character buffers used in R503 (1 or 2)
 
+// Node commands
+#define NODE_CMD_ACK          0
+#define NODE_CMD_REGISTRATION 1
+#define NODE_CMD_PING         2
+#define NODE_CMD_PONG         3
+#define NODE_CMD_ARMING       10
+#define NODE_CMD_ALARM        11
+#define NODE_CMD_AUTH_1       12
+#define NODE_CMD_AUTH_2       13
+#define NODE_CMD_AUTH_3       14
+#define NODE_CMD_ARMED_AWAY   15
+#define NODE_CMD_DISARMED     16
+#define NODE_CMD_ARMED_HOME   17
+
+// Mode
+typedef enum {
+  MODE_UNINITIALIZED = 0,
+  MODE_ENROLLMENT = 1,
+  MODE_ARMING = 10,
+  MODE_ALARM = 11,
+  MODE_AUTH_1 = 12,
+  MODE_AUTH_2 = 13,
+  MODE_AUTH_3 = 14,
+  MODE_ARMED_AWAY = 15,
+  MODE_DISARMED = 16,
+  MODE_ARMED_HOME = 17
+} authMode_t;
+
+// Node state
+typedef struct {
+    authMode_t mode;
+    authMode_t lastMode;
+} nodeState_t;
+
+// Current node mode
+volatile nodeState_t nodeState = { MODE_UNINITIALIZED, MODE_UNINITIALIZED };
+
 // Float conversion
 union u_tag {
-  uint8_t b[4];
-  float   fval;
+    uint8_t b[4];
+    float fval;
 } u;
 // time_t conversion
 union time_tag {
-  char   ch[4];
-  time_t val;
+    char ch[4];
+    time_t val;
 } timeConv;
+/*
+ * @brief Update node mode
+ * @param newMode New mode to set
+ * @return void
+ */
+void setNodeMode(authMode_t newMode) {
+  nodeState.lastMode = nodeState.mode;
+  nodeState.mode = newMode;
+  // Play mode change sound
+  chMBPostTimeout(&rtttlMailbox, (msg_t) songs[nodeState.mode - 10], TIME_IMMEDIATE);
+}
+/*
+ * @brief setLastNodeMode
+ * @return void
+ */
+void setLastNodeMode(void) {
+  nodeState.mode = nodeState.lastMode;
+  // Play mode change sound
+  chMBPostTimeout(&rtttlMailbox, (msg_t) songs[(uint8_t) nodeState.mode - 10], TIME_IMMEDIATE);
+}
+/*
+ * @brief Get authentication allowed level
+ * @return true if authentication is allowed, false otherwise
+ */
+bool isAuthAllowed(void) {
+  if (nodeState.mode >= MODE_ARMING) {
+    return true;
+  }
+  return false;
+}
+
 /*
  * Add float value to message
  */
-void addFloatVal(uint8_t element, uint8_t *out, float value){
-  out[0] = conf.reg[1+(REG_LEN*element)];
-  out[1] = conf.reg[2+(REG_LEN*element)];
+void addFloatVal(uint8_t element, uint8_t *out, float value) {
+  out[0] = conf.reg[1 + (REG_LEN * element)];
+  out[1] = conf.reg[2 + (REG_LEN * element)];
   u.fval = value;
   memcpy(&out[2], &u.b[0], 4);
 }
@@ -45,8 +113,11 @@ void addFloatVal(uint8_t element, uint8_t *out, float value){
 uint8_t enrollFinger(uint16_t location) {
   uint8_t ret;
 
-  for (int i = 1; i <= FEATURE_COUNT; i++)   {
-    R503SetAuraLED(aLEDBreathing, aLEDBlue, 50, 255);
+  setNodeMode(MODE_ENROLLMENT);
+
+  // Capture FEATURE_COUNT images
+  for (int i = 1; i <= FEATURE_COUNT; i++) {
+    R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 255);
     DBG_FUNC(">> Place finger on sensor...\r\n");
     while (true) {
       chThdSleepMilliseconds(200);
@@ -55,12 +126,12 @@ uint8_t enrollFinger(uint16_t location) {
       if (ret == R503_NO_FINGER) {
         continue; // try again
       } else if (ret == R503_OK) {
-		DBG_FUNC(" >> Image %d of %d taken \r\n", i, FEATURE_COUNT);
-        R503SetAuraLED(aLEDBreathing, aLEDWhite, 255, 255);
+        DBG_FUNC(" >> Image %d of %d taken \r\n", i, FEATURE_COUNT);
+        R503SetAuraLED(aLEDModeBreathing, aLEDWhite, 255, 255);
         // Go for feature extraction
       } else {
-		DBG_FUNC("[X] Could not take image (code: 0x%02X)\r\n", ret);
-        R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+        DBG_FUNC("[X] Could not take image (code: 0x%02X)\r\n", ret);
+        R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
         chThdSleepMilliseconds(100);
         continue; // try again
       }
@@ -70,30 +141,31 @@ uint8_t enrollFinger(uint16_t location) {
 
       if (ret != R503_OK) {
         DBG_FUNC("Failed to extract image, trying again (code: 0x%02X)\r\n", ret);
-        R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+        R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
         chThdSleepMilliseconds(100);
         continue;
       }
-      R503SetAuraLED(aLEDBreathing, aLEDGreen, 255, 255);
-	  DBG_FUNC(">> Image %d of %d extracted\r\n", i, FEATURE_COUNT);
+      R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 255, 255);
+      DBG_FUNC(">> Image %d of %d extracted\r\n", i, FEATURE_COUNT);
       chThdSleepMilliseconds(100);
       break;
     }
 
-	DBG_FUNC("Lift your finger from the sensor!\r\n");
+    DBG_FUNC("Lift your finger from the sensor!\r\n");
     while (R503TakeImage() != R503_NO_FINGER) {
       chThdSleepMilliseconds(100);
     }
   }
 
   DBG_FUNC(" >> Creating template...\r\n");
-  R503SetAuraLED(aLEDBreathing, aLEDPurple, 100, 255);
+  R503SetAuraLED(aLEDModeBreathing, aLEDPurple, 100, 255);
   chThdSleepMilliseconds(100);
   ret = R503CreateTemplate();
 
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to create a template (code: 0x%02X)\r\n", ret);
-    R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    setLastNodeMode();
     return ret;
   } else {
     DBG_FUNC(" >> Template created\r\n");
@@ -103,12 +175,15 @@ uint8_t enrollFinger(uint16_t location) {
   ret = R503StoreTemplate(1, location);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
-    R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    setLastNodeMode();
     return ret;
   }
 
-  R503SetAuraLED(aLEDBreathing, aLEDGreen, 255, 1);
+  R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 255, 1);
   DBG_FUNC(" >> Template stored at location: %d\r\n", location);
+
+  setLastNodeMode();
   return R503_OK;
 }
 /*
@@ -120,10 +195,10 @@ void searchFinger(void) {
   uint8_t ret;
 
   DBG_FUNC(" >> Place your finger on the sensor...\r\n");
-  R503SetAuraLED(aLEDBreathing, aLEDBlue, 50, 255);
+  R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 255);
 
   while (true) {
-	DBG_FUNC(" >> Waiting for finger...\r\nTime: %u", chVTGetSystemTime());
+    DBG_FUNC(" >> Waiting for finger...\r\nTime: %u", chVTGetSystemTime());
     ret = R503TakeImage();
     DBG_FUNC(" ret %d, time: %u", ret, chVTGetSystemTime());
 
@@ -132,11 +207,11 @@ void searchFinger(void) {
       continue;
     } else if (ret == R503_OK) {
       DBG_FUNC(" >> Image taken \r\n");
-      R503SetAuraLED(aLEDBreathing, aLEDYellow, 150, 255);
+      R503SetAuraLED(aLEDModeBreathing, aLEDYellow, 150, 255);
       break;
     } else {
       DBG_FUNC("[X] Could not take image (code: 0x%02X)\r\n", ret);
-      R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+      R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
       chThdSleepMilliseconds(1000);
       continue;
     }
@@ -146,7 +221,7 @@ void searchFinger(void) {
   ret = R503ExtractFeatures(1);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Could not extract features (code: 0x%02X)\r\n", ret);
-    R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
     return;
   }
 
@@ -154,15 +229,15 @@ void searchFinger(void) {
   ret = R503SearchFinger(1, &location, &confidence);
   if (ret == R503_NO_MATCH_IN_LIBRARY) {
     DBG_FUNC(" >> No matching finger found\r\n");
-    R503SetAuraLED(aLEDBreathing, aLEDRed, 255, 1);
+    R503SetAuraLED(aLEDModeBreathing, aLEDRed, 255, 1);
   } else if (ret == R503_OK) {
     DBG_FUNC(" >> Found finger\r\n");
     DBG_FUNC("    Finger ID: %d\r\n", location);
     DBG_FUNC("    Confidence: %d\r\n", confidence);
-    R503SetAuraLED(aLEDBreathing, aLEDGreen, 255, 1);
+    R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 255, 1);
   } else {
     DBG_FUNC("[X] Could not search library (code: 0x%02X)\r\n", ret);
-    R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
   }
 }
 /*
@@ -174,14 +249,14 @@ void searchFinger(void) {
  *
  */
 #define CHAR_BUFFER 1
-uint8_t downloadTemplate(uint16_t location, uint8_t* image, uint16_t* size) {
+uint8_t downloadTemplate(uint16_t location, uint8_t *image, uint16_t *size) {
   uint8_t ret;
 
   DBG_FUNC(" >> Retrieving...\r\n");
   ret = R503GetTemplate(CHAR_BUFFER, location);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to retrieve the template (code: 0x%02X)\r\n", ret);
-    R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
     return ret;
   }
 
@@ -191,7 +266,7 @@ uint8_t downloadTemplate(uint16_t location, uint8_t* image, uint16_t* size) {
   ret = R503UploadTemplate(CHAR_BUFFER, image, size);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to download the template (code: 0x%02X)\r\n", ret);
-    R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
     return ret;
   }
 
@@ -201,25 +276,25 @@ uint8_t downloadTemplate(uint16_t location, uint8_t* image, uint16_t* size) {
  *
  */
 uint8_t uploadTemplate(uint16_t location, uint8_t *image, uint16_t size) {
-	uint8_t ret;
+  uint8_t ret;
 
-	DBG_FUNC(" >> Uploading...\r\n");
-	ret = R503DownloadTemplate(CHAR_BUFFER, image, size);
-	if (ret != R503_OK) {
-		DBG_FUNC("[X] Failed to upload the template (code: 0x%02X)\r\n", ret);
-		R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-		return ret;
-	}
+  DBG_FUNC(" >> Uploading...\r\n");
+  ret = R503DownloadTemplate(CHAR_BUFFER, image, size);
+  if (ret != R503_OK) {
+    DBG_FUNC("[X] Failed to upload the template (code: 0x%02X)\r\n", ret);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    return ret;
+  }
 
-	DBG_FUNC(" >> Storing...\r\n");
-	ret = R503StoreTemplate(CHAR_BUFFER, location);
-	if (ret != R503_OK) {
-		DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
-		R503SetAuraLED(aLEDFlash, aLEDRed, 50, 3);
-		return ret;
-	}
+  DBG_FUNC(" >> Storing...\r\n");
+  ret = R503StoreTemplate(CHAR_BUFFER, location);
+  if (ret != R503_OK) {
+    DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
+    R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    return ret;
+  }
 
-	return R503_OK;
+  return R503_OK;
 }
 //  for (uint16_t var = 0; var < size; ++var) {
 //    DBG_FUNC("%02X ", finger[var]);

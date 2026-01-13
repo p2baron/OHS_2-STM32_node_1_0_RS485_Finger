@@ -64,11 +64,11 @@ typedef struct {
     uint8_t *payload;
     uint16_t checksum;
     uint8_t *payloadOverflow;
-} R503Packet_t ;
+} R503Packet_t;
 
 void R503PacketInit(SerialDriver *sdp);
-uint8_t R503PacketSend(R503Packet_t* packet);
-uint8_t R503PacketReceive(R503Packet_t* packet);
+uint8_t R503PacketSend(R503Packet_t *packet);
+uint8_t R503PacketReceive(R503Packet_t *packet);
 
 #endif
 

@@ -26,15 +26,31 @@
 /*
  * RTTTL thread
  */
-static THD_WORKING_AREA(waRTTTLThread, 256);
+static THD_WORKING_AREA(waRTTTLThread, 384);
 static THD_FUNCTION(RTTTLThread, arg) {
   chRegSetThreadName(arg);
-  msg_t msg;
+  msg_t msg = 0;  // Initialize to NULL
+  const char *song = 0;
 
   while (true) {
-    // Wait indefinitely for a message in the RTTTL mailbox
-    if (chMBFetchTimeout(&rtttlMailbox, &msg, TIME_INFINITE) == MSG_OK) {
-		playRTTTL((const char *)msg);
+    // Check for a message in the RTTTL mailbox
+    if (chMBFetchTimeout(&rtttlMailbox, &msg, TIME_IMMEDIATE) == MSG_OK) {
+      song = (const char *)msg;
+    }
+
+    if (song != NULL) {
+      DBG_RTTTL("RTTTL: time: %d\r\n", chVTGetSystemTime());
+//      if (chBSemWaitTimeout (&R503Sem, TIME_IMMEDIATE) == MSG_OK) {
+      playRTTTL(song);
+      DBG_RTTTL("RTTTL: Played song: %p, time: %d\r\n", song, chVTGetSystemTime());
+      song = NULL;
+//        chBSemSignal (&R503Sem);
+//      }
+    } else {
+      // Block waiting for a song if none available
+      if (chMBFetchTimeout(&rtttlMailbox, &msg, TIME_INFINITE) == MSG_OK) {
+        song = (const char *)msg;
+      }
     }
   }
 }

@@ -11,20 +11,14 @@
 #include "R503.h"
 
 // PWM configuration
-static PWMConfig pwmcfg = {
-  1000000,                    // PWM clock frequency (1 MHz)
-  20000,                      // PWM period (20 ms = 20000 ticks @ 1 MHz)
-  NULL,                       // No callback function
-  {
-      {PWM_OUTPUT_ACTIVE_HIGH, NULL},    // Channel 1 configuration (PB6)
-      {PWM_OUTPUT_DISABLED, NULL},       // Channel 2 configuration
-      {PWM_OUTPUT_DISABLED, NULL},       // Channel 3 configuration
-      {PWM_OUTPUT_DISABLED, NULL}        // Channel 4 configuration
-  },
-  0,
-  0,
-  0
-};
+static PWMConfig pwmcfg = { 1000000,    // PWM clock frequency (1 MHz)
+    20000,                              // PWM period (20 ms = 20000 ticks @ 1 MHz)
+    NULL,                               // No callback function
+    { { PWM_OUTPUT_ACTIVE_HIGH, NULL }, // Channel 1 configuration (PB6)
+        { PWM_OUTPUT_DISABLED, NULL },  // Channel 2 configuration
+        { PWM_OUTPUT_DISABLED, NULL },  // Channel 3 configuration
+        { PWM_OUTPUT_DISABLED, NULL }   // Channel 4 configuration
+    }, 0, 0, 0 };
 // PWM driver pointer
 static PWMDriver *pwm_driver;
 //
@@ -54,8 +48,8 @@ void tone(uint16_t frequency, uint16_t duration) {
   pwmEnableChannel(pwm_driver, 0, PWM_PERCENTAGE_TO_WIDTH(pwm_driver, 5000));
 
   if (duration > 0) {
-      chThdSleepMilliseconds(duration);
-      noTone();
+    chThdSleepMilliseconds(duration);
+    noTone();
   }
 }
 /*
@@ -68,139 +62,153 @@ void noTone(void) {
 /*
  * Function to play a single note
  * @param note Note string (e.g., "c#", "d4", "p", etc.)
- * @param defaultDuration Default duration if not specified in note
- * @param defaultOctave Default octave if not specified in note
+ * @param duration Default duration if not specified in note
+ * @param octave Default octave if not specified in note
  * @param bpm Beats per minute for duration calculation
  *
  */
-void playNote(const char *note, uint16_t defaultDuration, uint8_t defaultOctave, uint16_t bpm) {
-    uint16_t duration = defaultDuration;
-    uint8_t octave = defaultOctave;
-    uint16_t frequency = 0;
+void playNote(const char *note, uint16_t duration, uint8_t octave, uint16_t bpm) {
+  uint16_t frequency = 0;
 
-    // Parse duration if specified
-    if (isdigit((uint8_t)*note)) {
-        duration = 0;
-        while (isdigit((uint8_t)*note)) {
-            duration = duration * 10 + (*note - '0');
-            note++;
-        }
+  // Parse duration: Overwrite 'duration' if a specific one is found
+  if (isdigit((uint8_t)*note)) {
+    duration = 0;
+    while (isdigit((uint8_t)*note)) {
+      duration = duration * 10 + (*note - '0');
+      note++;
     }
+  }
 
-    // Parse note
-    switch (*note) {
-        case 'c': frequency = 261; break;
-        case 'd': frequency = 294; break;
-        case 'e': frequency = 329; break;
-        case 'f': frequency = 349; break;
-        case 'g': frequency = 392; break;
-        case 'a': frequency = 440; break;
-        case 'b': frequency = 493; break;
-        case 'p': frequency = 0; break; // Pause
-        default: return;
-    }
+  // Parse note
+  switch (*note) {
+    case 'c': frequency = 261; break;
+    case 'd': frequency = 294; break;
+    case 'e': frequency = 329; break;
+    case 'f': frequency = 349; break;
+    case 'g': frequency = 392; break;
+    case 'a': frequency = 440; break;
+    case 'b': frequency = 493; break;
+    case 'p': frequency = 0;   break;
+    default:  return;
+  }
+  note++;
+
+  // Parse accidental
+  if (*note == '#') {
+    frequency = (uint16_t)(frequency * 1.05946f);
     note++;
+  } else if (*note == 'b') {
+    frequency = (uint16_t)(frequency / 1.05946f);
+    note++;
+  }
 
-    // Parse sharp (#) or flat (b)
-    if (*note == '#') {
-        frequency = (uint16_t)(frequency * 1.05946); // Sharp
-        note++;
-    } else if (*note == 'b') {
-        frequency = (uint16_t)(frequency / 1.05946); // Flat
-        note++;
-    }
-    // Parse octave if specified
-    if (isdigit((uint8_t)*note)) {
-        octave = *note - '0';
-        note++;
-    }
-    // Adjust frequency for the octave
-    frequency = (uint16_t)(frequency * (1 << (octave - 4)));
-    // Check for dotted note
-    if (*note == '.') {
-        duration = (duration * 3) / 2; // Increase duration by 50%
-        note++;
-    }
-    // Corrected formula for note duration
-    uint16_t noteDuration = (60000 * 4) / (bpm * duration);
+  // Parse octave
+  if (isdigit((uint8_t)*note)) {
+    octave = *note - '0';
+    note++;
+  }
 
-    // Play the note
-    if (frequency > 0) {
-        tone(frequency, noteDuration);
-    } else {
-        noTone();
-        chThdSleepMilliseconds(noteDuration);
-    }
+  // Adjust frequency based on octave
+  int shift = (int)octave - 4;
+  if (shift > 0) {
+    frequency <<= shift;
+  } else if (shift < 0) {
+    frequency >>= -shift;
+  }
+
+  // Parse dotted note
+  if (*note == '.') {
+    duration = (uint16_t)((duration * 3U) / 2U);
+    note++;
+  }
+
+  // Calculate note duration in milliseconds
+  // (60,000 ms/min * 4 quarter-notes) / (BPM * note_value)
+  uint16_t noteDuration = (uint16_t)(240000UL / (bpm * duration));
+
+  if (frequency > 0) {
+    tone(frequency, noteDuration);
+  } else {
+    noTone();
+    chThdSleepMilliseconds(noteDuration);
+  }
 }
+
 /*
  * Function to play RTTTL melody
  * @param rtttl RTTTL string
  *
  */
 void playRTTTL(const char *rtttl) {
-    // RTTTL default parameters
-    uint16_t defaultDuration = 4;
-    uint8_t defaultOctave = 6;
-    uint16_t bpm = 63;
-    // LED parameters
-    uint8_t LEDMode = aLEDFlash;
-    uint8_t LEDColor = aLEDRed;
-    uint8_t LEDspeed = 50;
-	uint8_t LEDrepeat = 3;
-	// Pointer to traverse the RTTTL string
-	const char *p = rtttl;
-	// Let's mark that we are playing
-	isPlaying = 1;
+  // Check for NULL RTTTL string
+  if (rtttl == NULL) {
+    return;
+  }
 
-    // Parse LED header
-    while (*p && *p != ':') {
-		if (*p == 'm') {
-			p += 2; // Skip "m="
-			LEDMode = atoi(p);
-		} else if (*p == 'c') {
-			p += 2; // Skip "c="
-			LEDColor = atoi(p);
-		} else if (*p == 's') {
-			p += 2; // Skip "s="
-			LEDspeed = atoi(p);
-		} else if (*p == 'r') {
-			p += 2; // Skip "r="
-			LEDrepeat = atoi(p);
-		}
-		while (*p && *p != ',' && *p != ':')
-			p++; // Stop at ',' or ':'
-		if (*p == ',')
-			p++;
+  // RTTTL default parameters
+  uint16_t defaultDuration = 4;
+  uint8_t defaultOctave = 6;
+  uint16_t bpm = 63;
+  // LED parameters
+  uint8_t LEDMode = aLEDModeFlash;
+  uint8_t LEDColor = aLEDRed;
+  uint8_t LEDspeed = 50;
+  uint8_t LEDrepeat = 3;
+  // Pointer to traverse the RTTTL string
+  const char *p = rtttl;
+  // Let's mark that we are playing
+  isPlaying = 1;
+
+  // Parse LED header
+  while (*p && *p != ':') {
+    if (*p == 'm') {
+      p += 2; // Skip "m=", mode
+      LEDMode = atoi(p);
+    } else if (*p == 'c') {
+      p += 2; // Skip "c=", color
+      LEDColor = atoi(p);
+    } else if (*p == 's') {
+      p += 2; // Skip "s=", speed
+      LEDspeed = atoi(p);
+    } else if (*p == 'r') {
+      p += 2; // Skip "r=", repeat
+      LEDrepeat = atoi(p);
     }
-    if (*p == ':') p++; // Move past the second colon
-    R503SetAuraLED(LEDMode, LEDColor, LEDspeed, LEDrepeat);
+    while (*p && *p != ',' && *p != ':')
+      p++; // Stop at ',' or ':'
+    if (*p == ',') p++;
+  }
+  if (*p == ':') p++; // Move past the second colon
+  //R503SetAuraLED (LEDMode, LEDColor, LEDspeed, LEDrepeat);
 
-    // Parse RTTL defaults
-    while (*p && *p != ':') {
-        if (*p == 'd') {
-            p += 2; // Skip "d="
-            defaultDuration = atoi(p);
-        } else if (*p == 'o') {
-            p += 2; // Skip "o="
-            defaultOctave = atoi(p);
-        } else if (*p == 'b') {
-            p += 2; // Skip "b="
-            bpm = atoi(p);
-        }
-        while (*p && *p != ',' && *p != ':') p++; // Stop at ',' or ':'
-        if (*p == ',') p++;
+  // Parse RTTL defaults
+  while (*p && *p != ':') {
+    if (*p == 'd') {
+      p += 2; // Skip "d="
+      defaultDuration = atoi(p);
+    } else if (*p == 'o') {
+      p += 2; // Skip "o="
+      defaultOctave = atoi(p);
+    } else if (*p == 'b') {
+      p += 2; // Skip "b="
+      bpm = atoi(p);
     }
-    if (*p == ':') p++; // Move past the second colon
+    while (*p && *p != ',' && *p != ':')
+      p++; // Stop at ',' or ':'
+    if (*p == ',') p++;
+  }
+  if (*p == ':') p++; // Move past the second colon
 
-    // Parse and play notes
-    while (*p) {
-        playNote(p, defaultDuration, defaultOctave, bpm);
-        while (*p && *p != ',') p++;
-        if (*p == ',') p++;
-    }
+  // Parse and play notes
+  while (*p) {
+    playNote(p, defaultDuration, defaultOctave, bpm);
+    while (*p && *p != ',')
+      p++;
+    if (*p == ',') p++;
+  }
 
-	// Let's mark that we are done playing
-	isPlaying = 0;
+  // Let's mark that we are done playing
+  isPlaying = 0;
 }
 /*
  * Function to check if tone is playing
@@ -208,5 +216,5 @@ void playRTTTL(const char *rtttl) {
  *
  */
 bool isTonePlaying(void) {
-	return isPlaying ? true : false;
+  return isPlaying ? true : false;
 }

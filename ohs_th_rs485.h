@@ -30,15 +30,15 @@ void sendConf(void){
   DBG_RS485("Send Conf:");
 
   pos = 0;
-  msg.address = 0;
-  msg.ack = RS485_FLAG_ACK;
-  msg.ctrl = RS485_FLAG_DTA;
-  msg.length = REG_LEN + 1; // Add 'R'
+  msgOut.address = 0;
+  msgOut.ack = RS485_FLAG_ACK;
+  msgOut.ctrl = RS485_FLAG_DTA;
+  msgOut.length = REG_LEN + 1; // Add 'R'
 
   while (pos < sizeof(conf.reg)) {
-    msg.data[0] = 'R'; // Registration flag
-    memcpy(&msg.data[1], &conf.reg[pos], REG_LEN);
-    result = rs485SendMsgWithACK(&RS485D3, &msg, MSG_REPEAT);
+    msgOut.data[0] = 'R'; // Registration flag
+    memcpy(&msgOut.data[1], &conf.reg[pos], REG_LEN);
+    result = rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
     DBG_RS485(" %d",++result);
     pos += REG_LEN;
   }
@@ -59,16 +59,16 @@ void ping(void) {
  */
 void sendValue(uint8_t element, float value) {
   u.fval = value;
-  msg.address = 0;
-  msg.ctrl = RS485_FLAG_DTA;
-  msg.length = 7;
-  msg.data[0] = conf.reg[(REG_LEN*element)];
-  msg.data[1] = conf.reg[1+(REG_LEN*element)];
-  msg.data[2] = conf.reg[2+(REG_LEN*element)];
-  msg.data[3] = u.b[0]; msg.data[4] = u.b[1];
-  msg.data[5] = u.b[2]; msg.data[6] = u.b[3];
+  msgOut.address = 0;
+  msgOut.ctrl = RS485_FLAG_DTA;
+  msgOut.length = 7;
+  msgOut.data[0] = conf.reg[(REG_LEN*element)];
+  msgOut.data[1] = conf.reg[1+(REG_LEN*element)];
+  msgOut.data[2] = conf.reg[2+(REG_LEN*element)];
+  msgOut.data[3] = u.b[0]; msgOut.data[4] = u.b[1];
+  msgOut.data[5] = u.b[2]; msgOut.data[6] = u.b[3];
   // Send to GW
-  rs485SendMsgWithACK(&RS485D3, &msg, MSG_REPEAT);
+  rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
 }
 /*
  * RS485 thread
@@ -113,7 +113,7 @@ static THD_FUNCTION(RS485Thread, arg) {
           switch (rs485Msg.length) {
             case 1: sendConf(); break; // Request for registration
             case 10 ... 17 : // Auth. commands
-              mode = rs485Msg.length;
+              setNodeMode((authMode_t)(rs485Msg.length));
               break;
             default: break;
           }

@@ -27,10 +27,10 @@ uint8_t send[6];         // CMD send buffer.
 // Global variables
 R503_t r503;
 
-void R503Init(SerialDriver* sdp, uint32_t address, uint32_t password) {
+void R503Init(SerialDriver *sdp, uint32_t address, uint32_t password) {
 
   R503PacketInit(sdp);
-  
+
   r503.address = address;
   r503.password = password;
 }
@@ -58,7 +58,7 @@ uint8_t R503Start(void) {
 /*
  *
  */
-uint8_t R503Send(uint8_t* toSend, uint8_t size, uint8_t type) {
+uint8_t R503Send(uint8_t *toSend, uint8_t size, uint8_t type) {
   uint8_t ret;
   R503Packet_t out, in;
 
@@ -81,8 +81,7 @@ uint8_t R503Send(uint8_t* toSend, uint8_t size, uint8_t type) {
 /*
  *
  */
-uint8_t R503ReceiveData(uint8_t* toSend, uint8_t sendSize, uint8_t sendType,
-                        uint8_t* toReceive, u_int16_t* size) {
+uint8_t R503ReceiveData(uint8_t *toSend, uint8_t sendSize, uint8_t sendType, uint8_t *toReceive, u_int16_t *size) {
   uint8_t ret;
   R503Packet_t out, in;
 
@@ -100,8 +99,7 @@ uint8_t R503ReceiveData(uint8_t* toSend, uint8_t sendSize, uint8_t sendType,
 
   in.payload = data;
   ret = R503PacketReceive(&in);
-  DBG("R503 Receive: 0x%02X\r\n", ret);
-  DBG("R503 Data0: 0x%02X\r\n", data[0]);
+  DBG("R503 Receive: 0x%02X\r\n", ret); DBG("R503 Data0: 0x%02X\r\n", data[0]);
 
   if (ret != R503_OK) return ret;
   if (data[0] != R503_OK) return data[0];
@@ -122,8 +120,7 @@ uint8_t R503ReceiveData(uint8_t* toSend, uint8_t sendSize, uint8_t sendType,
 /*
  *
  */
-uint8_t R503SendData(uint8_t* toSendCmd, uint8_t cmdSize, uint8_t sendType,
-                     uint8_t* toSendData, uint16_t dataSize) {
+uint8_t R503SendData(uint8_t *toSendCmd, uint8_t cmdSize, uint8_t sendType, uint8_t *toSendData, uint16_t dataSize) {
   uint8_t ret;
   uint16_t pos = 0;
   R503Packet_t out, in;
@@ -140,8 +137,7 @@ uint8_t R503SendData(uint8_t* toSendCmd, uint8_t cmdSize, uint8_t sendType,
 
   in.payload = data;
   ret = R503PacketReceive(&in);
-  DBG("R503 Receive: 0x%02X\r\n", ret);
-  DBG("R503 Data0: 0x%02X\r\n", data[0]);
+  DBG("R503 Receive: 0x%02X\r\n", ret); DBG("R503 Data0: 0x%02X\r\n", data[0]);
 
   if (ret != R503_OK) return ret;
   if (data[0] != R503_OK) return data[0];
@@ -155,7 +151,7 @@ uint8_t R503SendData(uint8_t* toSendCmd, uint8_t cmdSize, uint8_t sendType,
       out.type = R503_PKT_DATA_END;
       out.length = dataSize;
     }
-    out.payload = toSendData+pos;
+    out.payload = toSendData + pos;
     out.address = r503.address;
 
     ret = R503PacketSend(&out);
@@ -238,10 +234,10 @@ uint8_t R503VerifyPassword(void) {
   uint8_t ret;
 
   send[0] = 0x13;
-  send[1] = (uint8_t)(r503.password >> 24);
-  send[2] = (uint8_t)(r503.password >> 16);
-  send[3] = (uint8_t)(r503.password >> 8);
-  send[4] = (uint8_t)(r503.password & 0xFF);
+  send[1] = (uint8_t) (r503.password >> 24);
+  send[2] = (uint8_t) (r503.password >> 16);
+  send[3] = (uint8_t) (r503.password >> 8);
+  send[4] = (uint8_t) (r503.password & 0xFF);
 
   ret = R503Send(&send[0], 5, R503_PKT_COMMAND);
   if (ret != R503_OK) return ret;
@@ -263,10 +259,10 @@ uint8_t R503SetAddress(uint32_t address) {
   uint8_t ret;
 
   send[0] = 0x15;
-  send[1] = (uint8_t)(r503.address >> 24);
-  send[2] = (uint8_t)(r503.address >> 16);
-  send[3] = (uint8_t)(r503.address >> 8);
-  send[4] = (uint8_t)(r503.address & 0xFF);
+  send[1] = (uint8_t) (r503.address >> 24);
+  send[2] = (uint8_t) (r503.address >> 16);
+  send[3] = (uint8_t) (r503.address >> 8);
+  send[4] = (uint8_t) (r503.address & 0xFF);
 
   ret = R503Send(&send[0], 5, R503_PKT_COMMAND);
   if (ret != R503_OK) return ret;
@@ -280,7 +276,7 @@ uint8_t R503SetAddress(uint32_t address) {
 /**
  * Sets the aura LED of the R503 fingerprint sensor.
  *
- * @param control The control mode of the LED (R503_LED_BREATHING, R503_LED_FLASHING, R503_LED_ON, R503_LED_OFF, )
+ * @param mode The control mode of the LED.
  * @param color The color of the LED.
  * @param speed The speed of the LED.
  * @param repeat The repeat times of the LED.
@@ -289,15 +285,15 @@ uint8_t R503SetAddress(uint32_t address) {
  * code=0x00: success;
  * code=0x01:error when receiving package;
  */
-uint8_t R503SetAuraLED(uint8_t control, uint8_t color, uint8_t speed, uint8_t repeat){
+uint8_t R503SetAuraLED(uint8_t control, uint8_t color, uint8_t speed, uint8_t repeat) {
   uint8_t ret;
 
   // Check parameters
-  if (control < aLEDBreathing || control > aLEDFadeOut) {
-	control = aLEDBreathing;
+  if (control < aLEDModeBreathing || control > aLEDModeFadeOut) {
+    control = aLEDModeBreathing;
   }
   if (color < aLEDRed || color > aLEDWhite) {
-	  color = aLEDRed;
+    color = aLEDRed;
   }
 
   send[0] = 0x35;
@@ -322,9 +318,9 @@ uint8_t R503HandShake(void) {
   uint8_t cmd = 0x40, ret;
 
   ret = R503Send(&cmd, 1, R503_PKT_COMMAND);
-   if (ret != R503_OK) return ret;
+  if (ret != R503_OK) return ret;
 
-   return data[0];
+  return data[0];
 }
 /**
  * Sends a command to check the status of the fingerprint sensor.
@@ -386,7 +382,7 @@ uint8_t R503SetPacketSize(uint8_t size) {
     send[2] = size;
   } else {
     send[2] = 2;
-    #if R503_DEBUG
+#if R503_DEBUG
       DBG("invalid packet size: %d\n", size);
     #endif
   }
@@ -404,7 +400,7 @@ uint8_t R503SetPacketSize(uint8_t size) {
  * code=0x00: read success;
  * code=0x01: error when receiving package
  */
-uint8_t R503GetValidTemplateCount(uint16_t* count) {
+uint8_t R503GetValidTemplateCount(uint16_t *count) {
   uint8_t cmd = 0x1D, ret;
 
   ret = R503Send(&cmd, 1, R503_PKT_COMMAND);
@@ -437,7 +433,7 @@ uint8_t R503CancelInstruction(void) {
  * code=00H: generation success;
  * code=01H: error when receiving package
  */
-uint8_t R503GetRandomNumber(uint32_t* number) {
+uint8_t R503GetRandomNumber(uint32_t *number) {
   uint8_t cmd = 0x14, ret;
 
   ret = R503Send(&cmd, 1, R503_PKT_COMMAND);
@@ -470,12 +466,12 @@ uint8_t R503SoftReset(void) {
  * code=03H: fail to collect finger
  */
 uint8_t R503TakeImage(void) {
-    uint8_t cmd = 0x01, ret;
+  uint8_t cmd = 0x01, ret;
 
-    ret = R503Send(&cmd, 1, R503_PKT_COMMAND);
-    if (ret != R503_OK) return ret;
+  ret = R503Send(&cmd, 1, R503_PKT_COMMAND);
+  if (ret != R503_OK) return ret;
 
-    return data[0];
+  return data[0];
 }
 ///**
 // * @brief Downloads an image from the R503 fingerprint sensor to the MCU.
@@ -567,8 +563,8 @@ uint8_t R503StoreTemplate(uint8_t charBuffer, uint16_t location) {
 
   send[0] = 0x06;
   send[1] = charBuffer;
-  send[2] = (uint8_t)(location >> 8);
-  send[3] = (uint8_t)(location & 0xFF);
+  send[2] = (uint8_t) (location >> 8);
+  send[3] = (uint8_t) (location & 0xFF);
 
   ret = R503Send(&send[0], 4, R503_PKT_COMMAND);
   if (ret != R503_OK) return ret;
@@ -592,8 +588,8 @@ uint8_t R503GetTemplate(uint8_t charBuffer, uint16_t location) {
 
   send[0] = 0x07;
   send[1] = charBuffer;
-  send[2] = (uint8_t)(location >> 8);
-  send[3] = (uint8_t)(location & 0xFF);
+  send[2] = (uint8_t) (location >> 8);
+  send[3] = (uint8_t) (location & 0xFF);
 
   ret = R503Send(&send[0], 4, R503_PKT_COMMAND);
   if (ret != R503_OK) return ret;
@@ -609,7 +605,7 @@ uint8_t R503GetTemplate(uint8_t charBuffer, uint16_t location) {
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
-uint8_t R503UploadTemplate(uint8_t charBuffer, uint8_t* template, uint16_t* size) {
+uint8_t R503UploadTemplate(uint8_t charBuffer, uint8_t *template, uint16_t *size) {
 
   send[0] = 0x08;
   send[1] = charBuffer;
@@ -625,7 +621,7 @@ uint8_t R503UploadTemplate(uint8_t charBuffer, uint8_t* template, uint16_t* size
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
-uint8_t R503DownloadTemplate(uint8_t charBuffer, uint8_t* template, uint16_t size) {
+uint8_t R503DownloadTemplate(uint8_t charBuffer, uint8_t *template, uint16_t size) {
 
   send[0] = 0x09;
   send[1] = charBuffer;
@@ -647,10 +643,10 @@ uint8_t R503DeleteTemplate(uint16_t location, uint16_t count) {
   uint8_t ret;
 
   send[0] = 0x0C;
-  send[1] = (uint8_t)(location >> 8);
-  send[2] = (uint8_t)(location & 0xFF);
-  send[3] = (uint8_t)(count >> 8);
-  send[4] = (uint8_t)(count & 0xFF);
+  send[1] = (uint8_t) (location >> 8);
+  send[2] = (uint8_t) (location & 0xFF);
+  send[3] = (uint8_t) (count >> 8);
+  send[4] = (uint8_t) (count & 0xFF);
 
   ret = R503Send(&send[0], 5, R503_PKT_COMMAND);
   if (ret != R503_OK) return ret;
@@ -726,7 +722,7 @@ uint8_t R503EmptyLibrary(void) {
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
-uint8_t R503GetTemplateCount(uint16_t* count) {
+uint8_t R503GetTemplateCount(uint16_t *count) {
   uint8_t ret;
   uint8_t cmd = 0x1D;
 
@@ -742,7 +738,7 @@ uint8_t R503GetTemplateCount(uint16_t* count) {
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
-uint8_t R503MatchFinger(uint16_t* confidence) {
+uint8_t R503MatchFinger(uint16_t *confidence) {
   uint8_t ret;
   uint8_t cmd = 0x03;
 
@@ -760,7 +756,7 @@ uint8_t R503MatchFinger(uint16_t* confidence) {
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
-uint8_t R503SearchFinger(uint8_t charBuffer, uint16_t* location, uint16_t* confidence) {
+uint8_t R503SearchFinger(uint8_t charBuffer, uint16_t *location, uint16_t *confidence) {
   uint8_t ret;
 
   send[0] = 0x04;

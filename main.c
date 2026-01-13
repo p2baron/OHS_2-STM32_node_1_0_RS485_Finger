@@ -23,7 +23,7 @@
 #endif
 
 // This node settings
-#define VERSION         101    // Version of EEPROM struct
+#define VERSION         100    // Version of EEPROM struct
 #define SENSOR_DELAY    600    // In seconds, 600 = 10 minutes
 #define ELEMENTS        1      // How many elements this node has
 
@@ -40,13 +40,26 @@
 #define GATEWAYID       0    // RS485 Gateway
 #endif
 // Songs :]
-const char *song_ok = "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p";
-const char *song_auth0 = "m=1,c=1,s=250,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p,p,p";
-const char *song_auth1 = "m=1,c=1,s=200,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p";
-const char *song_auth2 = "m=1,c=1,s=150,r=0:d=4,o=5,b=140:c,p,p,p,p";
-const char *song_auth3 = "m=1,c=1,s=100,r=0:d=4,o=5,b=140:c,p,p";
-const char *melody = "Impossible:d=16,o=6,b=95:32d,32d#,32d,32d#,32d,32d#,32d,32d#,32d,32d,32d#,32e,32f,32f#,32g,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,a#,g,2d,32p,a#,g,2c#,32p,a#,g,2c,a#5,8c,2p,32p,a#5,g5,2f#,32p,a#5,g5,2f,32p,a#5,g5,2e,d#,8d";
-const char *song = "Imperial:d=4,o=5,b=120:32e,32e,32e,32c,32e,32g";
+const char *ok    = "m=1,c=1,s=250,r=0:d=16,o=5,b=120:c,g,e,c6";
+const char *error = "m=1,c=1,s=250,r=0:d=16,o=5,b=120:c6,g,eb,c";
+#define SONG_ARMING     "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
+#define SONG_AUTH0      "m=1,c=1,s=250,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p,p,p"
+#define SONG_AUTH1      "m=1,c=1,s=200,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p"
+#define SONG_AUTH2      "m=1,c=1,s=150,r=0:d=4,o=5,b=140:c,p,p,p,p"
+#define SONG_AUTH3      "m=1,c=1,s=100,r=0:d=4,o=5,b=140:c,p,p"
+#define SONG_ARMED_AWAY "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
+#define SONG_DISARMED   "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
+#define SONG_ARMED_HOME "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
+// Songs array
+static const char *songs[8] = {
+SONG_ARMING,
+SONG_AUTH0,
+SONG_AUTH1,
+SONG_AUTH2,
+SONG_AUTH3,
+SONG_ARMED_AWAY,
+SONG_DISARMED,
+SONG_ARMED_HOME };
 // ChibiOS override
 #define SERIAL_BUFFERS_SIZE 128
 
@@ -63,9 +76,11 @@ const char *song = "Imperial:d=4,o=5,b=120:32e,32e,32e,32c,32e,32g";
 #include "chprintf.h"
 #include "board.h"
 
+binary_semaphore_t R503Sem;
+
 // Define debug console
 #ifdef HAS_SERIAL1
-BaseSequentialStream* console = (BaseSequentialStream*)&SD1;
+BaseSequentialStream *console = (BaseSequentialStream*) &SD1;
 #endif
 
 // RFM69
@@ -73,27 +88,26 @@ BaseSequentialStream* console = (BaseSequentialStream*)&SD1;
 #include "rfm69.h"
 #endif
 
-// Global variables
-volatile uint8_t mode = 0; // Authentication mode
 // RTC related
 static RTCDateTime timespec;
 // Fingerprint
 #ifdef HAS_FINGERPRINT
+#define FINGERPRINT_CHAR_BUFFER 1
 #define MAX_FINGERPRINT_SIZE 1536
 uint16_t fingerSize = 0;
 uint8_t finger[MAX_FINGERPRINT_SIZE];
-uint8_t commpressed[MAX_FINGERPRINT_SIZE + 4 + (MAX_FINGERPRINT_SIZE /2)];
+uint8_t commpressed[MAX_FINGERPRINT_SIZE + 4 + (MAX_FINGERPRINT_SIZE / 2)];
 #endif
 
 // Configuration struct
 struct config_t {
   uint16_t version;
-  uint8_t  reg[REG_LEN * ELEMENTS]; // REG_LEN * #, number of elements on this node
+  uint8_t reg[REG_LEN * ELEMENTS]; // REG_LEN * #, number of elements on this node
 } conf;
 
 // RTTTL thread variables
 static mailbox_t rtttlMailbox;
-static msg_t rtttlMailboxBuffer[1]; // Storage for one message (pointer)
+static msg_t rtttlMailboxBuffer[5]; // Storage for one message (pointer)
 
 // OHS includes
 #include "ohs_peripheral.h"
@@ -110,10 +124,10 @@ static msg_t rtttlMailboxBuffer[1]; // Storage for one message (pointer)
 // Thread handling
 #ifdef HAS_RADIO
 #include "ohs_th_radio.h"
-uint8_t msg[REG_LEN]; // size of REG_LEN, or larger for sensor msg if longer than REG_LEN size
+uint8_t msgOut[REG_LEN]; // size of REG_LEN, or larger for sensor msg if longer than REG_LEN size
 #endif
 #ifdef HAS_RS485
-RS485Msg_t msg;
+RS485Msg_t msgOut;
 #include "ohs_th_rs485.h"
 #endif
 // other threads
@@ -126,6 +140,8 @@ RS485Msg_t msg;
 int main(void) {
   halInit();
   chSysInit();
+  // Semaphores
+  chBSemObjectInit(&R503Sem, false);
   /*
    * I/O pins setup.
    */
@@ -153,7 +169,7 @@ int main(void) {
    * Definitions initialization.
    */
 #ifdef HAS_SERIAL1
-  sdStart(&SD1,  &serialCfg);
+  sdStart(&SD1, &serialCfg);
   DBG("\r\nOHS node start\r\n");
 #endif
 #ifdef HAS_RS485
@@ -178,7 +194,7 @@ int main(void) {
   // Read configuration
   readFromFlash(&conf, sizeof(conf));
   DBG("Flash EEPROM start: 0x%08x\r\n", FLASH_EE_REGION);
-  if (conf.version != VERSION ) {
+  if (conf.version != VERSION) {
     setDefault();
     writeToFlash(&conf, sizeof(conf));
   }
@@ -189,46 +205,85 @@ int main(void) {
   chThdCreateStatic(waRadioThread, sizeof(waRadioThread), NORMALPRIO, RadioThread, (void*)"radio");
 #endif
 #ifdef HAS_RS485
-  chThdCreateStatic(waRS485Thread, sizeof(waRS485Thread), NORMALPRIO, RS485Thread, (void*)"rs485");
+  chThdCreateStatic(waRS485Thread, sizeof(waRS485Thread), NORMALPRIO, RS485Thread, (void*) "rs485");
 #endif
-  chThdCreateStatic(waServiceThread, sizeof(waServiceThread), NORMALPRIO-1, ServiceThread, (void*)"service");
-  chThdCreateStatic(waBlinkerThread, sizeof(waBlinkerThread), NORMALPRIO-2, BlinkerThread, (void*)"blinker");
-  chThdCreateStatic(waRTTTLThread, sizeof(waRTTTLThread), NORMALPRIO, RTTTLThread, (void*)"rtttl");
+  chThdCreateStatic(waServiceThread, sizeof(waServiceThread), NORMALPRIO - 1, ServiceThread, (void*) "service");
+  chThdCreateStatic(waBlinkerThread, sizeof(waBlinkerThread), NORMALPRIO - 2, BlinkerThread, (void*) "blinker");
+  chThdCreateStatic(waRTTTLThread, sizeof(waRTTTLThread), NORMALPRIO, RTTTLThread, (void*) "rtttl");
 
   // Initialize tone generation
   toneInit();
   // Initialize fingerprint sensor
   while (R503Start() != R503_OK) {
-	#ifdef HAS_SERIAL1
-	  chprintf(console, "FP Init error!\r\n");
-	#endif
-	chThdSleepMilliseconds(2000);
+#ifdef HAS_SERIAL1
+    chprintf(console, "FP Init error!\r\n");
+#endif
+    chThdSleepMilliseconds(2000);
   }
 
   // Register this node
   sendConf();
 
-  chMBPostTimeout(&rtttlMailbox, (msg_t)song_auth0, TIME_IMMEDIATE);
-
+  // Initialize node state
+  setNodeMode(MODE_DISARMED);
   uint8_t ret;
   uint16_t location, confidence;
+  authMode_t last = MODE_UNINITIALIZED;
   while (true) {
-    // Read fingerprint
-	ret = R503TakeImage();
-	if (ret == R503_OK) {
-	  ret = R503ExtractFeatures(1);
-	  if (ret != R503_OK) {
-		continue;
-	  } else {
-	  	ret = R503SearchFinger(1, &location, &confidence);
-		if (ret == R503_OK) {
+    chThdSleepMilliseconds(200);
+    // Check if mode changed
+    if (nodeState.mode != last) {
+      last = nodeState.mode;
+      chprintf(console, "Mode changed to %d\r\n", nodeState.mode);
+    }
 
-		  chprintf(console," >> Found finger, ");
-		  chprintf(console,"ID: %d, ", location);
-		  chprintf(console,"Confidence: %d\r\n", confidence);
-		}
-	  }
-	}
-	chThdSleepMilliseconds(100);
+    // Check if authentication is allowed
+    if (!isAuthAllowed()) {
+      continue;
+    }
+
+    // Read fingerprint
+    ret = R503TakeImage();
+    if (ret == R503_OK) {
+      ret = R503ExtractFeatures(FINGERPRINT_CHAR_BUFFER);
+      if (ret != R503_OK) {
+        continue;
+      } else {
+        ret = R503SearchFinger(FINGERPRINT_CHAR_BUFFER, &location, &confidence);
+        if (ret == R503_OK) {
+          //playNote("c", 200, 5, 100);
+          //playRTTTL(ok);
+          // send song to RTTTL thread
+          chMBPostTimeout(&rtttlMailbox, (msg_t)ok, TIME_IMMEDIATE);
+
+          R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 100, 1);
+
+          chprintf(console, " >> Found finger, ");
+          chprintf(console, "ID: %d, ", location);
+          chprintf(console, "Confidence: %d\r\n", confidence);
+
+          // Send authentication message
+          msgOut.address = GATEWAYID;
+          msgOut.ctrl = RS485_FLAG_DTA;
+          msgOut.length = 11;
+          msgOut.data[0] = conf.reg[0]; // Element ID
+          msgOut.data[1] = conf.reg[1]; // Element type
+          msgOut.data[2] = 0;           // Arming state
+          memcpy(&msgOut.data[3], "finger", 6);
+          memcpy(&msgOut.data[9], &location, 2);
+          rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
+          chprintf(console, " >> Sent: ");
+          for (uint8_t i = 0; i < 8; i++) {
+            chprintf(console, " %02X", msgOut.data[i + 3]);
+          }
+          chprintf(console, "\r\n");
+        } else {
+          // send song to RTTTL thread
+          chMBPostTimeout(&rtttlMailbox, (msg_t)error, TIME_IMMEDIATE);
+          R503SetAuraLED(aLEDModeBreathing, aLEDRed, 100, 1);
+        }
+      }
+    }
+    //chprintf(console," >> ret: 0x%02X\r\n", ret);
   }
 }
