@@ -1,25 +1,20 @@
 /*
  * OHS node - finger print authentication
- * vysocan 2025
+ * vysocan (c) 2025-26
  *
+ * This is the firmware for OHS node with fingerprint sensor.
+ * Using R503 fingerprint sensor.
  *
  */
-// Node definitions
-#define HAS_SERIAL1
+// Node feature defines
 //#define HAS_RADIO
 #define HAS_RS485
 #define HAS_FINGERPRINT
-#define DEBUG
+#define HAS_SERIAL1 // Console UART
 
 // Sanity checks
 #if defined(HAS_RADIO) && defined(HAS_RS485)
 #error "Should not define both HAS_RADIO and HAS_RS485"
-#endif
-
-#ifdef DEBUG
-#define DBG(...) {chprintf(console, __VA_ARGS__);}
-#else
-#define DBG(...)
 #endif
 
 // This node settings
@@ -39,27 +34,17 @@
 #ifdef HAS_RS485
 #define GATEWAYID       0    // RS485 Gateway
 #endif
-// Songs :]
-const char *ok    = "m=1,c=1,s=250,r=0:d=16,o=5,b=120:c,g,e,c6";
-const char *error = "m=1,c=1,s=250,r=0:d=16,o=5,b=120:c6,g,eb,c";
-#define SONG_ARMING     "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
-#define SONG_AUTH0      "m=1,c=1,s=250,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p,p,p"
-#define SONG_AUTH1      "m=1,c=1,s=200,r=0:d=4,o=5,b=140:c,p,p,p,p,p,p"
-#define SONG_AUTH2      "m=1,c=1,s=150,r=0:d=4,o=5,b=140:c,p,p,p,p"
-#define SONG_AUTH3      "m=1,c=1,s=100,r=0:d=4,o=5,b=140:c,p,p"
-#define SONG_ARMED_AWAY "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
-#define SONG_DISARMED   "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
-#define SONG_ARMED_HOME "m=1,c=4,s=250,r=0:d=4,o=5,b=140:p"
-// Songs array
-static const char *songs[8] = {
-SONG_ARMING,
-SONG_AUTH0,
-SONG_AUTH1,
-SONG_AUTH2,
-SONG_AUTH3,
-SONG_ARMED_AWAY,
-SONG_DISARMED,
-SONG_ARMED_HOME };
+// Songs :] - RTTTL format, keep it short or raise count in main loop
+#define SONG_OK           ":d=16,o=5,b=120:c,g,e,c6"
+#define SONG_ERROR        ":d=16,o=5,b=120:c6,g,eb,c"
+#define SONG_TICK         ":d=16,o=5,b=300:16c6"
+#define SONG_ARMING       ":d=16,o=5,b=80:c,e,c"
+#define SONG_ALARM        ":d=16,o=5,b=80:c,p,c,p,c,p,c"
+#define SONG_AUTH1        ":d=16,o=5,b=120:c,p,c,p,c"
+#define SONG_AUTH2        ":d=16,o=5,b=120:c,p,c"
+#define SONG_AUTH3        ":d=16,o=5,b=120:c"
+#define SONG_ARM_REJECTED ":d=16,o=4,b=80:c#,p,c#,p,c#"
+
 // ChibiOS override
 #define SERIAL_BUFFERS_SIZE 128
 
@@ -76,12 +61,15 @@ SONG_ARMED_HOME };
 #include "chprintf.h"
 #include "board.h"
 
-binary_semaphore_t R503Sem;
-
 // Define debug console
 #ifdef HAS_SERIAL1
 BaseSequentialStream *console = (BaseSequentialStream*) &SD1;
+#define DBG(...) {chprintf(console, __VA_ARGS__);}
+#else
+#define DBG(...)
 #endif
+
+binary_semaphore_t R503Sem;
 
 // RFM69
 #ifdef HAS_RADIO
@@ -96,7 +84,12 @@ static RTCDateTime timespec;
 #define MAX_FINGERPRINT_SIZE 1536
 uint16_t fingerSize = 0;
 uint8_t finger[MAX_FINGERPRINT_SIZE];
-uint8_t commpressed[MAX_FINGERPRINT_SIZE + 4 + (MAX_FINGERPRINT_SIZE / 2)];
+uint8_t compressed[MAX_FINGERPRINT_SIZE + 4 + (MAX_FINGERPRINT_SIZE / 2)];
+uint16_t location, confidence;
+uint8_t fingerCount;
+#define FINGER_PASSED           4
+#define FINGER_PASSED_COOLDOWN -4
+int8_t fingerPassed;
 #endif
 
 // Configuration struct
@@ -120,6 +113,10 @@ static msg_t rtttlMailboxBuffer[5]; // Storage for one message (pointer)
 #include "eeprom2flash.h"
 #include "tone.h"
 #include "date_time.h"
+
+// Global variables
+authMode_t currentMode = MODE_UNINITIALIZED;
+uint8_t resp;
 
 // Thread handling
 #ifdef HAS_RADIO
@@ -189,7 +186,7 @@ int main(void) {
 #endif
 
   // mailboxes
-  chMBObjectInit(&rtttlMailbox, rtttlMailboxBuffer, 1);
+  chMBObjectInit(&rtttlMailbox, rtttlMailboxBuffer, 5);
 
   // Read configuration
   readFromFlash(&conf, sizeof(conf));
@@ -216,7 +213,7 @@ int main(void) {
   // Initialize fingerprint sensor
   while (R503Start() != R503_OK) {
 #ifdef HAS_SERIAL1
-    chprintf(console, "FP Init error!\r\n");
+    DBG("FP Init error!\r\n");
 #endif
     chThdSleepMilliseconds(2000);
   }
@@ -226,15 +223,61 @@ int main(void) {
 
   // Initialize node state
   setNodeMode(MODE_DISARMED);
-  uint8_t ret;
-  uint16_t location, confidence;
-  authMode_t last = MODE_UNINITIALIZED;
+
+  // Initialize counters
+  int8_t count = -1;
+  fingerCount = 0;
+  fingerPassed = 0;
+  // Main loop
   while (true) {
     chThdSleepMilliseconds(200);
+
     // Check if mode changed
-    if (nodeState.mode != last) {
-      last = nodeState.mode;
-      chprintf(console, "Mode changed to %d\r\n", nodeState.mode);
+    if (nodeState.mode != currentMode) {
+      currentMode = nodeState.mode;
+      DBG("Mode changed to %d\r\n", nodeState.mode);
+    }
+    if (count > 0) {
+      count--;
+    } else if (count == 0) {
+      // Set LED according to mode  
+      switch (nodeState.mode) {
+        case MODE_ALARM:
+          R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 4);
+          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ALARM, TIME_IMMEDIATE);
+          break;
+        case MODE_AUTH_1:
+          R503SetAuraLED(aLEDModeFlash, aLEDRed, 100, 1);
+          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH1, TIME_IMMEDIATE);
+          break;
+        case MODE_AUTH_2:
+          R503SetAuraLED(aLEDModeFlash, aLEDRed, 150, 1);
+          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH2, TIME_IMMEDIATE);
+          break;
+        case MODE_AUTH_3:
+          R503SetAuraLED(aLEDModeFlash, aLEDRed, 200, 1);
+          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH3, TIME_IMMEDIATE);
+          break;
+        case MODE_ARMING:
+          R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 1);
+          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ARMING, TIME_IMMEDIATE);
+          break;
+        case MODE_ARMED_AWAY:
+          R503SetAuraLED(aLEDModeBreathing, aLEDRed, 50, 2);
+          break;
+        case MODE_DISARMED:
+          R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 50, 1);
+          break;
+        case MODE_ARMED_HOME:
+          R503SetAuraLED(aLEDModeBreathing, aLEDYellow, 50, 2);
+          break;
+        default:
+          break;
+      }
+      count--;
+    } else {
+      // Reset count
+      count = 10;
     }
 
     // Check if authentication is allowed
@@ -242,48 +285,41 @@ int main(void) {
       continue;
     }
 
+    // Increment finger passed counter
+    fingerPassed++;
+
     // Read fingerprint
-    ret = R503TakeImage();
-    if (ret == R503_OK) {
-      ret = R503ExtractFeatures(FINGERPRINT_CHAR_BUFFER);
-      if (ret != R503_OK) {
+    resp = R503TakeImage();
+    if ((resp == R503_OK) && (fingerPassed >= 0)) {
+      resp = R503ExtractFeatures(FINGERPRINT_CHAR_BUFFER);
+      if (resp != R503_OK) {
         continue;
       } else {
-        ret = R503SearchFinger(FINGERPRINT_CHAR_BUFFER, &location, &confidence);
-        if (ret == R503_OK) {
-          //playNote("c", 200, 5, 100);
-          //playRTTTL(ok);
-          // send song to RTTTL thread
-          chMBPostTimeout(&rtttlMailbox, (msg_t)ok, TIME_IMMEDIATE);
-
-          R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 100, 1);
-
-          chprintf(console, " >> Found finger, ");
-          chprintf(console, "ID: %d, ", location);
-          chprintf(console, "Confidence: %d\r\n", confidence);
-
-          // Send authentication message
-          msgOut.address = GATEWAYID;
-          msgOut.ctrl = RS485_FLAG_DTA;
-          msgOut.length = 11;
-          msgOut.data[0] = conf.reg[0]; // Element ID
-          msgOut.data[1] = conf.reg[1]; // Element type
-          msgOut.data[2] = 0;           // Arming state
-          memcpy(&msgOut.data[3], "finger", 6);
-          memcpy(&msgOut.data[9], &location, 2);
-          rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
-          chprintf(console, " >> Sent: ");
-          for (uint8_t i = 0; i < 8; i++) {
-            chprintf(console, " %02X", msgOut.data[i + 3]);
-          }
-          chprintf(console, "\r\n");
+        resp = R503SearchFinger(FINGERPRINT_CHAR_BUFFER, &location, &confidence);
+        if (resp == R503_OK) {
+          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_OK, TIME_IMMEDIATE);
+          R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 50, 2);
+          DBG(" >> Found finger, ID: %d, confidence; %d\r\n", location, confidence);
+          fingerCount++;
         } else {
-          // send song to RTTTL thread
-          chMBPostTimeout(&rtttlMailbox, (msg_t)error, TIME_IMMEDIATE);
-          R503SetAuraLED(aLEDModeBreathing, aLEDRed, 100, 1);
+          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
+          R503SetAuraLED(aLEDModeBreathing, aLEDRed, 50, 2);
         }
       }
     }
-    //chprintf(console," >> ret: 0x%02X\r\n", ret);
+
+    // Reset finger passed counter if no finger was found
+    if (fingerCount == 0) {
+      fingerPassed = -1; 
+    }
+
+    // Check if authentication passed, if armed away or home, only one finger is needed
+    if ((fingerCount) && 
+        ((fingerPassed > FINGER_PASSED) || (nodeState.mode == MODE_ARMED_AWAY) || (nodeState.mode == MODE_ARMED_HOME))) {
+      // Send authentication message
+      sendFinger(0, (fingerCount == 1) ? 0 : 1, location);
+      fingerCount = 0;
+      fingerPassed = FINGER_PASSED_COOLDOWN;
+    }
   }
 }

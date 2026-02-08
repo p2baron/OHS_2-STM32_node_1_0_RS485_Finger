@@ -71,6 +71,24 @@ void sendValue(uint8_t element, float value) {
   rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
 }
 /*
+ * @brief Send fingerprint authentication message to gateway
+ * @param element Element index
+ * @param state Arming state, 0=arm away, 1=arm home
+ * @param fingerId Fingerprint ID
+ * @return Result code
+ */
+int8_t sendFinger(uint8_t element, uint8_t state, uint16_t fingerId) {
+  msgOut.address = GATEWAYID;
+  msgOut.ctrl = RS485_FLAG_DTA;
+  msgOut.length = 11;
+  msgOut.data[0] = conf.reg[(REG_LEN*element)];     // Element ID
+  msgOut.data[1] = conf.reg[1+(REG_LEN*element)];   // Element type
+  msgOut.data[2] = state;                           // Arming state
+  memcpy(&msgOut.data[3], "finger", 6);
+  memcpy(&msgOut.data[9], &fingerId, 2);
+  return (int8_t)rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
+}
+/*
  * RS485 thread
  */
 static THD_WORKING_AREA(waRS485Thread, 512);
@@ -111,67 +129,75 @@ static THD_FUNCTION(RS485Thread, arg) {
         // Commands
         if (rs485Msg.ctrl == RS485_FLAG_CMD) {
           switch (rs485Msg.length) {
-            case 1: sendConf(); break; // Request for registration
-            case 10 ... 17 : // Auth. commands
+            case NODE_CMD_REGISTRATION: // Request for registration
+              sendConf();
+              break;
+            case NODE_CMD_ARMING ... NODE_CMD_ARMED_HOME : // Mode commands
               setNodeMode((authMode_t)(rs485Msg.length));
+              break;
+            case NODE_CMD_ARM_REJECTED: // Arm rejected, just play sound
+              chMBPostTimeout(&rtttlMailbox, (msg_t) SONG_ARM_REJECTED, TIME_IMMEDIATE);
               break;
             default: break;
           }
         }
         // Data
         if (rs485Msg.ctrl == RS485_FLAG_DTA) {
-          if (rs485Msg.data[0] == 'R') {
-        	// Registration
-            temp = 0;
-            while (((conf.reg[temp] != rs485Msg.data[1]) || (conf.reg[temp+1] != rs485Msg.data[2]) ||
-                    (conf.reg[temp+2] != rs485Msg.data[3])) && (temp < sizeof(conf.reg))) {
-              temp += REG_LEN; // size of one conf. element
-            }
-            if (temp < sizeof(conf.reg)) {
-              memcpy(&conf.reg[temp], &rs485Msg.data[1], REG_LEN);
-              // Save it to EEPROM
-              conf.version = VERSION;
-              writeToFlash(&conf, sizeof(conf));
-              DBG_RS485("RS485: Reg. updated at pos %u\r\n", temp);
-            }
-          }
-          // Time beacon
-          else if (rs485Msg.data[0] == 'T') {
-        	// Time beacon
-            memcpy(&timeConv.ch[0], &rs485Msg.data[1], 4);
-            convertUnixSecondToRTCDateTime(&timespec, timeConv.val);
-            rtcSetTime(&RTCD1, &timespec);
-            DBG_RS485("RS485: Time updated to %u\r\n", timeConv.val);
-            rtcGetTime(&RTCD1, &timespec);
-            DBG_RS485("RTC: Time updated to %u\r\n", convertRTCDateTimeToUnixSecond(&timespec));
-          } else if (rs485Msg.data[0] == 'F') {
-            // Fingerprint
-            DBG_RS485("RS485: Fingerprint command received\r\n");
-            switch (rs485Msg.data[1]) {
+          switch (rs485Msg.data[0]) {
+            case 'R': // Registration
+              temp = 0;
+              while (((conf.reg[temp] != rs485Msg.data[1]) || (conf.reg[temp+1] != rs485Msg.data[2]) ||
+                      (conf.reg[temp+2] != rs485Msg.data[3])) && (temp < sizeof(conf.reg))) {
+                temp += REG_LEN; // size of one conf. element
+              }
+              if (temp < sizeof(conf.reg)) {
+                memcpy(&conf.reg[temp], &rs485Msg.data[1], REG_LEN);
+                // Save it to EEPROM
+                conf.version = VERSION;
+                writeToFlash(&conf, sizeof(conf));
+                // send song to RTTTL thread
+                chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
+                DBG_RS485("RS485: Reg. updated at pos %u\r\n", temp/REG_LEN); // Show # of updated element
+              }
+              break;
+            case 'T': // Time beacon
+              memcpy(&timeConv.ch[0], &rs485Msg.data[1], 4);
+              convertUnixSecondToRTCDateTime(&timespec, timeConv.val);
+              rtcSetTime(&RTCD1, &timespec);
+              DBG_RS485("RS485: Time updated to %u\r\n", timeConv.val);
+              rtcGetTime(&RTCD1, &timespec);
+              DBG_RS485("RTC: Time updated to %u\r\n", convertRTCDateTimeToUnixSecond(&timespec));
+              break;
+            case 'F': // Fingerprint
+              DBG_RS485("RS485: Fingerprint command received\r\n");
+              switch (rs485Msg.data[1]) {
                 case 'E': // Enroll
-                    enrollFinger((uint16_t)rs485Msg.data[2]);
-                    break;
+                  enrollFinger((uint16_t)rs485Msg.data[2]);
+                  break;
                 case 'G': // Get template
-                	temp = downloadTemplate((uint16_t)rs485Msg.data[2], &finger[0], &fingerSize);
-                	if (temp == R503_OK) {
-                		DBG_RS485("RS485: Fingerprint template downloaded, size %u\r\n", fingerSize);
+                  temp = downloadTemplate((uint16_t)rs485Msg.data[2], &finger[0], &fingerSize);
+                  if (temp == R503_OK) {
+                    DBG_RS485("RS485: Fingerprint template downloaded, size %u\r\n", fingerSize);
                 	}
                 	// Compress template
-                	size = rle_compress(&finger[0], fingerSize, &commpressed[0]);
+                	size = rle_compress(&finger[0], fingerSize, &compressed[0]);
                 	if (size > fingerSize) {
-
+                    DBG_RS485("RS485: Fingerprint template compressed, size %u\r\n", size);
                 	} else {
-
+                    DBG_RS485("RS485: Fingerprint template not compressed, size %u\r\n", size);
                 	}
                 	// To be implemented: send template back to gateway
-                    break;
+                  break;
                 case 'S': // Save template
                 	// To be implemented: receive template from gateway and save to location
                 	temp = uploadTemplate((uint16_t)rs485Msg.data[2], &finger[0], fingerSize);
-                    break;
+                  break;
                 default:
-                    break;
-            }
+                  break;
+              }
+              break;
+            default:
+              break;
           }
         } // data
       } // MSG_OK

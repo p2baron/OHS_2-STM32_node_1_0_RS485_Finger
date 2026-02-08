@@ -143,10 +143,10 @@ uint8_t R503SendData(uint8_t *toSendCmd, uint8_t cmdSize, uint8_t sendType, uint
   if (data[0] != R503_OK) return data[0];
 
   do {
-    if (dataSize > r503.params.dataPackageSize) {
+    if (dataSize > r503.params.dataPacketSize) {
       out.type = R503_PKT_DATA_START;
-      out.length = r503.params.dataPackageSize;
-      dataSize -= r503.params.dataPackageSize;
+      out.length = r503.params.dataPacketSize;
+      dataSize -= r503.params.dataPacketSize;
     } else {
       out.type = R503_PKT_DATA_END;
       out.length = dataSize;
@@ -187,7 +187,7 @@ uint8_t R503ReadParameters(void) {
   r503.params.fingerLibrarySize = data[5] << 8 | data[6];
   r503.params.securityLevel = data[7] << 8 | data[8];
   r503.params.deviceAddress = data[9] << 24 | data[10] << 16 | data[11] << 8 | data[12];
-  r503.params.dataPackageSize = 32 << (data[13] << 8 | data[14]);
+  r503.params.dataPacketSize = 32 << (data[13] << 8 | data[14]); // 32 * 0, 1, 2, 3
   r503.params.baudrate = 9600 * (data[15] << 8 | data[16]);
 
   return data[0];
@@ -473,40 +473,6 @@ uint8_t R503TakeImage(void) {
 
   return data[0];
 }
-///**
-// * @brief Downloads an image from the R503 fingerprint sensor to the MCU.
-// *
-// * @param image Pointer to the image data to be uploaded.
-// * @param size The size of the image data.
-// *
-// * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
-// */
-//uint8_t R503DownloadImage(uint8_t* image, uint16_t size) {
-//  uint8_t cmd = 0x0A;
-//
-//  return R503SendP(&cmd, image, 1, R503_PKT_COMMAND);
-//}
-/**
- * @brief Uploads an image to the fingerprint sensor.
- *
- * @param image Pointer to the image data to be downloaded.
- * @param size Size of the image data in bytes.
- *
- * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
- */
-//uint8_t R503UploadImage(uint8_t* image) {
-//  uint8_t cmd = 0x0B;
-//
-//  return R503SendP(&cmd, image, 1, R503_PKT_COMMAND);
-//}
-//uint8_t R503UploadTemplate(uint8_t charBuffer, uint8_t* template) {
-//  uint8_t send[2];
-//
-//  send[0] = 0x0B;
-//  send[1] = charBuffer;
-//
-//  return R503ReceiveData(&send[0], 2, R503_PKT_COMMAND, template);
-//}
 /**
  * @brief Extracts features from the given character buffer.
  *
@@ -599,7 +565,7 @@ uint8_t R503GetTemplate(uint8_t charBuffer, uint16_t location) {
 /**
  * @brief Uploads a template from the R503 fingerprint sensor to the MCU.
  *
- * @param charBuffer The character buffer to upload the template from.
+ * @param charBuffer The character buffer to upload the template from. (range from 1 to 6)
  * @param template Pointer to the image data to be uploaded.
  * @param size The size of the template data.
  *
@@ -632,6 +598,7 @@ uint8_t R503DownloadTemplate(uint8_t charBuffer, uint8_t *template, uint16_t siz
  * @brief Deletes a template from the specified location.
  *
  * @param location The location of the template to be deleted.
+ * @param count The number of templates to delete.
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  * code=00H: delete success;
@@ -670,55 +637,10 @@ uint8_t R503EmptyLibrary(void) {
 
   return data[0];
 }
-///**
-// * @brief Downloads the template data from the specified character buffer from R503
-// *
-// * @param charBuffer The character buffer to download the template from.
-// * @param templateData Pointer to the buffer where the template data will be stored.
-// * @param size Reference to the variable where the size of the downloaded template data will be stored.
-// *
-// * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
-// */
-//uint8_t R503DownloadTemplate(uint8_t charBuffer, uint8_t* templateData, uint16_t* size) {
-//  uint8_t ret;
-//  R503Packet_t out, in;
-//
-//  out.type = R503_PKT_DATA_END;
-//  out.length = 1;
-//  out.payload = &charBuffer;
-//  out.address = r503.address;
-//
-//  return R503SendData(&out);
-//}
-
-///**
-// * @brief Uploads a template to the specified character buffer on R503
-// *
-// * @param charBuffer The character buffer to upload the template to.
-// * @param templateData The template data to upload.
-// * @param size The size of the template data.
-// *
-// * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
-// */
-//uint8_t R503UploadTemplate(uint8_t charBuffer, uint8_t *templateData, uint16_t size) {
-//    uint16_t tempBufferSize = fpsTemplateSize + 256;
-//    uint8_t tempBuffer[tempBufferSize];
-//    memset(tempBuffer, 0xFF, tempBufferSize); // Fill the buffer with 0xFF
-//    if(size <= tempBufferSize) {
-//        memcpy(tempBuffer, templateData, size); // Copy the template data to the buffer, leaving the rest as 0xFF if the template data is smaller than the buffer size
-//    }
-//    else {
-//        memcpy(tempBuffer, templateData, tempBufferSize);
-//    }
-//
-//    GET_PACKET(1, 0x09, charBuffer);
-//    if (confirmationCode != R503_OK)
-//        return confirmationCode;
-//
-//    return sendData(tempBuffer, tempBufferSize); // Send the buffer to the sensor
-//}
 /**
  * @brief Gets the number of templates stored in the device.
+ *
+ *
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
@@ -735,6 +657,8 @@ uint8_t R503GetTemplateCount(uint16_t *count) {
 }
 /**
  * @brief Matches the fingerprint and returns the confidence level.
+ *
+ * @param confidence Pointer to store the confidence level of the match.
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
@@ -753,6 +677,8 @@ uint8_t R503MatchFinger(uint16_t *confidence) {
  * @brief Searches for a finger in the fingerprint library.
  *
  * @param charBuffer The character buffer to search for the finger.
+ * @param location Pointer to store the location of the found finger.
+ * @param confidence Pointer to store the confidence level of the match.
  *
  * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
  */
@@ -774,17 +700,4 @@ uint8_t R503SearchFinger(uint8_t charBuffer, uint16_t *location, uint16_t *confi
 
   return data[0];
 }
-///**
-// * @brief Reads the index table of a specified page and stores it in the provided buffer.
-// *
-// * @param table Pointer to the buffer where the index table will be stored.
-// * @param page The page number of the index table to be read.
-// *
-// * @return uint8_t Returns R503_OK if successful, otherwise returns an error code.
-// */
-//uint8_t R503Lib::readIndexTable(uint8_t *table, uint8_t page) {
-//    GET_PACKET(33, 0x1F, page);
-//    memcpy(table, &data[1], 32);
-//
-//    return confirmationCode;
-//}
+

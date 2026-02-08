@@ -149,37 +149,16 @@ void playRTTTL(const char *rtttl) {
   uint16_t defaultDuration = 4;
   uint8_t defaultOctave = 6;
   uint16_t bpm = 63;
-  // LED parameters
-  uint8_t LEDMode = aLEDModeFlash;
-  uint8_t LEDColor = aLEDRed;
-  uint8_t LEDspeed = 50;
-  uint8_t LEDrepeat = 3;
   // Pointer to traverse the RTTTL string
   const char *p = rtttl;
   // Let's mark that we are playing
   isPlaying = 1;
 
-  // Parse LED header
-  while (*p && *p != ':') {
-    if (*p == 'm') {
-      p += 2; // Skip "m=", mode
-      LEDMode = atoi(p);
-    } else if (*p == 'c') {
-      p += 2; // Skip "c=", color
-      LEDColor = atoi(p);
-    } else if (*p == 's') {
-      p += 2; // Skip "s=", speed
-      LEDspeed = atoi(p);
-    } else if (*p == 'r') {
-      p += 2; // Skip "r=", repeat
-      LEDrepeat = atoi(p);
-    }
-    while (*p && *p != ',' && *p != ':')
-      p++; // Stop at ',' or ':'
-    if (*p == ',') p++;
-  }
-  if (*p == ':') p++; // Move past the second colon
-  //R503SetAuraLED (LEDMode, LEDColor, LEDspeed, LEDrepeat);
+  // Skip the name part
+  while (*p && *p != ':')
+    p++;
+  // Move past the first colon
+  if (*p == ':') p++;
 
   // Parse RTTL defaults
   while (*p && *p != ':') {

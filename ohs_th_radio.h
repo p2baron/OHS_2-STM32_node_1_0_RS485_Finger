@@ -64,13 +64,27 @@ void sendValue(uint8_t element, float value){
   rfm69Sleep();
 }
 /*
+ * Send fingerprint authentication message to gateway
+ */
+int8_t sendFinger(uint8_t element, uint8_t state, uint16_t fingerId) {
+  int8_t resp;
+  msgOut[0] = conf.reg[(REG_LEN*element)];     // Element ID
+  msgOut[1] = conf.reg[1+(REG_LEN*element)];   // Element type
+  msgOut[2] = state;                           // Arming state
+  memcpy(&msgOut[3], "finger", 6);
+  memcpy(&msgOut[9], &fingerId, 2);
+  resp = rfm69SendWithRetry(GATEWAYID, msgOut, 11, MSG_REPEAT);
+  rfm69Sleep();
+  return resp;
+}
+/*
  * RFM69 thread
  */
 static THD_WORKING_AREA(waRadioThread, 1024);
 static THD_FUNCTION(RadioThread, arg) {
   chRegSetThreadName(arg);
   msg_t resp;
-  uint8_t tmp;
+  uint8_t temp;
 
   while (true) {
     // Wait for packet
@@ -98,18 +112,20 @@ static THD_FUNCTION(RadioThread, arg) {
         // Registration
         case 'R':
           DBG_RADIO("Registration # ");
-          tmp = 0;
-          while (((conf.reg[tmp] != rfm69Data.data[1]) || (conf.reg[tmp+1] != rfm69Data.data[2]) ||
-                  (conf.reg[tmp+2] != rfm69Data.data[3])) && (tmp < sizeof(conf.reg))) {
-            tmp += REG_LEN; // size of one conf. element
+          temp = 0;
+          while (((conf.reg[temp] != rfm69Data.data[1]) || (conf.reg[temp+1] != rfm69Data.data[2]) ||
+                  (conf.reg[temp+2] != rfm69Data.data[3])) && (temp < sizeof(conf.reg))) {
+            temp += REG_LEN; // size of one conf. element
           }
-          if (tmp < sizeof(conf.reg)) {
-            DBG_RADIO("%u", tmp/REG_LEN); // Show # of updated element
+          if (temp < sizeof(conf.reg)) {
             // Replace data
-            memcpy(&conf.reg[tmp], (uint8_t*)&rfm69Data.data[1], REG_LEN);
+            memcpy(&conf.reg[temp], (uint8_t*)&rfm69Data.data[1], REG_LEN);
             // Save it to EEPROM
             conf.version = VERSION;
             writeToFlash(&conf, sizeof(conf));
+            // send song to RTTTL thread
+            chMBPostTimeout(&rtttlMailbox, (msg_t)tick, TIME_IMMEDIATE);
+            DBG_RADIO("Radio: Reg. updated at pos %u\r\n", temp/REG_LEN); // Show # of updated element
           }
           DBG_RADIO("\r\n");
           break;

@@ -22,7 +22,7 @@ typedef struct {
     uint16_t fingerLibrarySize;
     uint16_t securityLevel;
     uint32_t deviceAddress;
-    uint16_t dataPackageSize;
+    uint16_t dataPacketSize;
     uint32_t baudrate;
 } R503Params_t;
 

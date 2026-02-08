@@ -24,7 +24,7 @@
 #endif
 
 /*
- * RTTTL thread
+ * RTTTL thread - asynchronous playback of RTTTL songs
  */
 static THD_WORKING_AREA(waRTTTLThread, 384);
 static THD_FUNCTION(RTTTLThread, arg) {
@@ -34,23 +34,9 @@ static THD_FUNCTION(RTTTLThread, arg) {
 
   while (true) {
     // Check for a message in the RTTTL mailbox
-    if (chMBFetchTimeout(&rtttlMailbox, &msg, TIME_IMMEDIATE) == MSG_OK) {
+    if (chMBFetchTimeout(&rtttlMailbox, &msg, TIME_INFINITE) == MSG_OK) {
       song = (const char *)msg;
-    }
-
-    if (song != NULL) {
-      DBG_RTTTL("RTTTL: time: %d\r\n", chVTGetSystemTime());
-//      if (chBSemWaitTimeout (&R503Sem, TIME_IMMEDIATE) == MSG_OK) {
       playRTTTL(song);
-      DBG_RTTTL("RTTTL: Played song: %p, time: %d\r\n", song, chVTGetSystemTime());
-      song = NULL;
-//        chBSemSignal (&R503Sem);
-//      }
-    } else {
-      // Block waiting for a song if none available
-      if (chMBFetchTimeout(&rtttlMailbox, &msg, TIME_INFINITE) == MSG_OK) {
-        song = (const char *)msg;
-      }
     }
   }
 }

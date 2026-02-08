@@ -32,19 +32,21 @@
 #define NODE_CMD_ARMED_AWAY   15
 #define NODE_CMD_DISARMED     16
 #define NODE_CMD_ARMED_HOME   17
+#define NODE_CMD_ARM_REJECTED 18
 
 // Mode
 typedef enum {
   MODE_UNINITIALIZED = 0,
   MODE_ENROLLMENT = 1,
-  MODE_ARMING = 10,
-  MODE_ALARM = 11,
-  MODE_AUTH_1 = 12,
-  MODE_AUTH_2 = 13,
-  MODE_AUTH_3 = 14,
-  MODE_ARMED_AWAY = 15,
-  MODE_DISARMED = 16,
-  MODE_ARMED_HOME = 17
+  MODE_ARMING = NODE_CMD_ARMING,
+  MODE_ALARM = NODE_CMD_ALARM,
+  MODE_AUTH_1 = NODE_CMD_AUTH_1,
+  MODE_AUTH_2 = NODE_CMD_AUTH_2,
+  MODE_AUTH_3 = NODE_CMD_AUTH_3,
+  MODE_ARMED_AWAY = NODE_CMD_ARMED_AWAY,
+  MODE_DISARMED = NODE_CMD_DISARMED,
+  MODE_ARMED_HOME = NODE_CMD_ARMED_HOME,
+  NODE_ARM_REJECTED = NODE_CMD_ARM_REJECTED
 } authMode_t;
 
 // Node state
@@ -74,8 +76,6 @@ union time_tag {
 void setNodeMode(authMode_t newMode) {
   nodeState.lastMode = nodeState.mode;
   nodeState.mode = newMode;
-  // Play mode change sound
-  chMBPostTimeout(&rtttlMailbox, (msg_t) songs[nodeState.mode - 10], TIME_IMMEDIATE);
 }
 /*
  * @brief setLastNodeMode
@@ -83,8 +83,6 @@ void setNodeMode(authMode_t newMode) {
  */
 void setLastNodeMode(void) {
   nodeState.mode = nodeState.lastMode;
-  // Play mode change sound
-  chMBPostTimeout(&rtttlMailbox, (msg_t) songs[(uint8_t) nodeState.mode - 10], TIME_IMMEDIATE);
 }
 /*
  * @brief Get authentication allowed level
@@ -120,8 +118,8 @@ uint8_t enrollFinger(uint16_t location) {
     R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 255);
     DBG_FUNC(">> Place finger on sensor...\r\n");
     while (true) {
-      chThdSleepMilliseconds(200);
-
+      chThdSleepMilliseconds(250);
+      // Take image
       ret = R503TakeImage();
       if (ret == R503_NO_FINGER) {
         continue; // try again
@@ -132,22 +130,19 @@ uint8_t enrollFinger(uint16_t location) {
       } else {
         DBG_FUNC("[X] Could not take image (code: 0x%02X)\r\n", ret);
         R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
-        chThdSleepMilliseconds(100);
         continue; // try again
       }
-
+      // Extract features
       ret = R503ExtractFeatures(i);
-      DBG_FUNC(" ef-ret %d,", ret);
-
       if (ret != R503_OK) {
         DBG_FUNC("Failed to extract image, trying again (code: 0x%02X)\r\n", ret);
         R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
-        chThdSleepMilliseconds(100);
         continue;
       }
       R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 255, 255);
       DBG_FUNC(">> Image %d of %d extracted\r\n", i, FEATURE_COUNT);
-      chThdSleepMilliseconds(100);
+      // send song to RTTTL thread
+      chMBPostTimeout(&rtttlMailbox, (msg_t) SONG_TICK, TIME_IMMEDIATE);
       break;
     }
 
@@ -165,6 +160,8 @@ uint8_t enrollFinger(uint16_t location) {
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to create a template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    // send song to RTTTL thread
+    chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
     setLastNodeMode();
     return ret;
   } else {
@@ -176,6 +173,8 @@ uint8_t enrollFinger(uint16_t location) {
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    // send song to RTTTL thread
+    chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
     setLastNodeMode();
     return ret;
   }
@@ -183,6 +182,8 @@ uint8_t enrollFinger(uint16_t location) {
   R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 255, 1);
   DBG_FUNC(" >> Template stored at location: %d\r\n", location);
 
+  // send song to RTTTL thread
+  chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_OK, TIME_IMMEDIATE);
   setLastNodeMode();
   return R503_OK;
 }

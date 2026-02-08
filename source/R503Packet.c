@@ -27,7 +27,9 @@ uint8_t checksumBuffer[2];
  */
 static SerialConfig rs503_cfg = { 57600, 0, 0, 0 };
 /*
+ * @brief Initializes the R503 packet driver.
  *
+ * @param sdp Pointer to the serial driver instance.
  */
 void R503PacketInit(SerialDriver *sdp) {
   r503sdp = sdp;
