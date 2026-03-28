@@ -174,6 +174,11 @@ static THD_FUNCTION(RS485Thread, arg) {
                 case 'E': // Enroll
                   enrollFinger((uint16_t)rs485Msg.data[2]);
                   break;
+                case 'D': // Delete
+                  R503DeleteTemplate((uint16_t)rs485Msg.data[2], 1);
+                  // send song to RTTTL thread
+                  chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
+                  break;
                 case 'G': // Get template
                   temp = downloadTemplate((uint16_t)rs485Msg.data[2], &finger[0], &fingerSize);
                   if (temp == R503_OK) {

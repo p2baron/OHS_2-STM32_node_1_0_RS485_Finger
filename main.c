@@ -26,6 +26,7 @@
 #define REG_LEN         21   // Size of one conf. element
 #define NODE_NAME_SIZE  16   // As defined on gateway
 #define MSG_REPEAT      3    // Repeat sending
+#define DUMMY_NO_VALUE  0xFF // Dummy value for no value
 // Radio
 #ifdef HAS_RADIO
 #define GATEWAYID       1    // Radio Gateway
@@ -85,7 +86,7 @@ static RTCDateTime timespec;
 uint16_t fingerSize = 0;
 uint8_t finger[MAX_FINGERPRINT_SIZE];
 uint8_t compressed[MAX_FINGERPRINT_SIZE + 4 + (MAX_FINGERPRINT_SIZE / 2)];
-uint16_t location, confidence;
+uint16_t location = DUMMY_NO_VALUE, confidence = 0;
 uint8_t fingerCount;
 #define FINGER_PASSED           4
 #define FINGER_PASSED_COOLDOWN -4
@@ -137,11 +138,13 @@ RS485Msg_t msgOut;
 int main(void) {
   halInit();
   chSysInit();
+  
   // Semaphores
   chBSemObjectInit(&R503Sem, false);
-  /*
-   * I/O pins setup.
-   */
+  
+  // LED
+  palSetPadMode(GPIOC, GPIOC_LED, PAL_MODE_OUTPUT_PUSHPULL);
+
 #ifdef HAS_RADIO
   palSetPadMode(GPIOA, GPIOA_RADIO_INT, PAL_MODE_INPUT);
   palSetPadMode(GPIOA, GPIOA_SCK, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
@@ -240,7 +243,7 @@ int main(void) {
     if (count > 0) {
       count--;
     } else if (count == 0) {
-      // Set LED according to mode  
+      // Set LED and song according to mode  
       switch (nodeState.mode) {
         case MODE_ALARM:
           R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 4);
@@ -320,6 +323,7 @@ int main(void) {
       sendFinger(0, (fingerCount == 1) ? 0 : 1, location);
       fingerCount = 0;
       fingerPassed = FINGER_PASSED_COOLDOWN;
+      location = DUMMY_NO_VALUE;
     }
   }
 }
