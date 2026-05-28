@@ -117,7 +117,15 @@ uint8_t enrollFinger(uint16_t location) {
   for (int i = 1; i <= FEATURE_COUNT; i++) {
     R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 255);
     DBG_FUNC(">> Place finger on sensor...\r\n");
+    uint8_t attempts = 0;
     while (true) {
+      if (++attempts > 40) { // 40 × 250 ms = 10 s timeout
+        DBG_FUNC("[X] Enrollment timeout, aborting\r\n");
+        R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+        chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
+        setLastNodeMode();
+        return R503_TIMEOUT;
+      }
       chThdSleepMilliseconds(250);
       // Take image
       ret = R503TakeImage();
@@ -184,7 +192,8 @@ uint8_t enrollFinger(uint16_t location) {
 
   // send song to RTTTL thread
   chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_OK, TIME_IMMEDIATE);
-  setLastNodeMode();
+  // NOTE: caller must call setLastNodeMode() after sync to keep MODE_ENROLLMENT
+  // active and prevent the main loop from touching the R503 during template download.
   return R503_OK;
 }
 /*
@@ -280,21 +289,29 @@ uint8_t uploadTemplate(uint16_t location, uint8_t *image, uint16_t size) {
   uint8_t ret;
 
   DBG_FUNC(" >> Uploading...\r\n");
+  chBSemWait(&R503Sem);
   ret = R503DownloadTemplate(CHAR_BUFFER, image, size);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to upload the template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    chBSemSignal(&R503Sem);
     return ret;
   }
+
+  // DATA_END was queued, not yet transmitted. Wait for the last packet
+  // to fully leave the UART before sending StoreChar (57600 baud, ~25ms/packet).
+  chThdSleepMilliseconds(100);
 
   DBG_FUNC(" >> Storing...\r\n");
   ret = R503StoreTemplate(CHAR_BUFFER, location);
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
+    chBSemSignal(&R503Sem);
     return ret;
   }
 
+  chBSemSignal(&R503Sem);
   return R503_OK;
 }
 //  for (uint16_t var = 0; var < size; ++var) {

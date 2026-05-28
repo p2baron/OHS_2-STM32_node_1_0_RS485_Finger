@@ -20,6 +20,10 @@ void setDefault(void) {
   conf.reg[4+(REG_LEN*0)]  = 0b0011111; // Default setting, group='not set', enabled
   memset(&conf.reg[5+(REG_LEN*0)], 0, NODE_NAME_SIZE);
   strcpy((char *)&conf.reg[5+(REG_LEN*0)], "Fingerprint"); // Set default name
+  for (uint8_t i = 0; i < PENDING_SYNC_SLOTS; i++) {
+    conf.pendingSync[i].location = 0xFFFF;
+    conf.pendingSync[i].failMask = 0;
+  }
 }
 
 #endif /* REG_DEFAULTS_H_ */

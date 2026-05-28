@@ -62,11 +62,14 @@ static SerialConfig serialCfg = {
  * RS485 default setting
  */
 #ifdef HAS_RS485
+#ifndef NODE_ADDRESS
+#define NODE_ADDRESS 1
+#endif
 static RS485Config rs485cfg = {
-  19200,    // speed
-  1,        // address
-  GPIOB,    // port
-  GPIOB_DE3 // pad
+  19200,       // speed
+  NODE_ADDRESS, // address — override with -DNODE_ADDRESS=N
+  GPIOB,       // port
+  GPIOB_DE3    // pad
 };
 #endif
 

@@ -17,6 +17,7 @@
 #else
 #define DBG_RS485(...)
 #endif
+
 /*
  * Registration
  */
@@ -88,10 +89,176 @@ int8_t sendFinger(uint8_t element, uint8_t state, uint16_t fingerId) {
   memcpy(&msgOut.data[9], &fingerId, 2);
   return (int8_t)rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
 }
+
+/*
+ * Low-level RS485 data send — required by sendDataMultipart() in ohs_multipart.h.
+ * Reuses the global msgOut to keep stack usage minimal.
+ */
+static int8_t sendDataDirect(uint8_t address, const uint8_t *data, uint8_t length) {
+  msgOut.address = address;
+  msgOut.ctrl    = RS485_FLAG_DTA;
+  msgOut.length  = length;
+  memcpy(&msgOut.data[0], data, length);
+  return (rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT) == MSG_OK) ? 1 : -1;
+}
+
+#include "ohs_multipart.h"
+
+/*
+ * Maximum RS485 address to probe when pushing a new template to peers.
+ * Adjust to match the number of nodes on the bus.
+ */
+#define FINGER_SYNC_MAX_ADDR 4
+
+static void addPendingSync(uint16_t loc, uint8_t addr) {
+  uint8_t free = PENDING_SYNC_SLOTS;
+  for (uint8_t i = 0; i < PENDING_SYNC_SLOTS; i++) {
+    if (conf.pendingSync[i].location == loc) {
+      conf.pendingSync[i].failMask |= (uint8_t)(1u << (addr - 1));
+      writeToFlash(&conf, sizeof(conf));
+      return;
+    }
+    if (conf.pendingSync[i].location == 0xFFFF && free == PENDING_SYNC_SLOTS) free = i;
+  }
+  if (free < PENDING_SYNC_SLOTS) {
+    conf.pendingSync[free].location = loc;
+    conf.pendingSync[free].failMask = (uint8_t)(1u << (addr - 1));
+    writeToFlash(&conf, sizeof(conf));
+  }
+}
+
+static void removePendingSyncAddr(uint16_t loc, uint8_t addr) {
+  for (uint8_t i = 0; i < PENDING_SYNC_SLOTS; i++) {
+    if (conf.pendingSync[i].location == loc) {
+      conf.pendingSync[i].failMask &= (uint8_t)(~(1u << (addr - 1)));
+      if (conf.pendingSync[i].failMask == 0)
+        conf.pendingSync[i].location = 0xFFFF;
+      writeToFlash(&conf, sizeof(conf));
+      return;
+    }
+  }
+}
+
+static void clearPendingSync(uint16_t loc) {
+  for (uint8_t i = 0; i < PENDING_SYNC_SLOTS; i++) {
+    if (conf.pendingSync[i].location == loc) {
+      conf.pendingSync[i].location = 0xFFFF;
+      conf.pendingSync[i].failMask = 0;
+      writeToFlash(&conf, sizeof(conf));
+      return;
+    }
+  }
+}
+
+static void syncDeleteToNodes(uint16_t loc) {
+  RS485Msg_t drainMsg;
+  uint8_t delData[3] = {'F', 'D', (uint8_t)loc};
+  for (uint8_t addr = 1; addr <= FINGER_SYNC_MAX_ADDR; addr++) {
+    if (addr == rs485cfg.address) continue;
+    DBG_RS485("FP sync delete: -> addr %u\r\n", addr);
+    if (RS485D3.trcState == TRC_RECEIVED)
+      rs485GetMsg(&RS485D3, &drainMsg);
+    sendDataDirect(addr, delData, sizeof(delData));
+  }
+}
+
+static void retryPendingSyncs(void) {
+  bool hasAny = false;
+  for (uint8_t i = 0; i < PENDING_SYNC_SLOTS; i++) {
+    if (conf.pendingSync[i].location != 0xFFFF) { hasAny = true; break; }
+  }
+  if (!hasAny) return;
+
+  chThdSleepMilliseconds(3000); // Let R503 initialize before accessing it
+  uint8_t pendingCount = 0;
+  for (uint8_t i = 0; i < PENDING_SYNC_SLOTS; i++)
+    if (conf.pendingSync[i].location != 0xFFFF) pendingCount++;
+  DBG_RS485("FP sync: retrying %u pending entries on boot\r\n", pendingCount);
+
+  for (uint8_t i = 0; i < PENDING_SYNC_SLOTS; i++) {
+    if (conf.pendingSync[i].location == 0xFFFF || conf.pendingSync[i].failMask == 0) continue;
+    uint16_t loc  = conf.pendingSync[i].location;
+    uint8_t  mask = conf.pendingSync[i].failMask;
+
+    chBSemWait(&R503Sem);
+    bool dlOK = (downloadTemplate(loc, &finger[0], &fingerSize) == R503_OK);
+    chBSemSignal(&R503Sem);
+
+    if (!dlOK) {
+      DBG_RS485("FP sync retry: loc %u download failed\r\n", loc);
+      continue;
+    }
+
+    compressed[0] = 'F'; compressed[1] = 'C';
+    memcpy(&compressed[2], &loc, 2);
+    uint16_t compLen = rle_compress(&finger[0], fingerSize, &compressed[4]);
+    uint16_t syncLen = (uint16_t)(compLen + 4);
+
+    for (uint8_t addr = 1; addr <= FINGER_SYNC_MAX_ADDR; addr++) {
+      if (!(mask & (uint8_t)(1u << (addr - 1)))) continue;
+      if (addr == rs485cfg.address) continue;
+      DBG_RS485("FP sync retry: -> addr %u (loc %u)\r\n", addr, loc);
+      RS485Msg_t drainMsg;
+      int8_t result = -1;
+      for (uint8_t attempt = 0; attempt < 3 && result != 1; attempt++) {
+        if (attempt > 0) chThdSleepMilliseconds(200);
+        if (RS485D3.trcState == TRC_RECEIVED)
+          rs485GetMsg(&RS485D3, &drainMsg);
+        result = sendDataMultipart(addr, compressed, syncLen);
+      }
+      if (result == 1) {
+        DBG_RS485("FP sync retry: addr %u OK\r\n", addr);
+        removePendingSyncAddr(loc, addr);
+      } else {
+        DBG_RS485("FP sync retry: addr %u still failed\r\n", addr);
+      }
+    }
+  }
+}
+
+static void syncFingerprintToNodes(uint16_t location) {
+  uint8_t addr;
+  RS485Msg_t drainMsg;
+
+  if (downloadTemplate(location, &finger[0], &fingerSize) != R503_OK) {
+    DBG_RS485("FP sync: template download failed\r\n");
+    return;
+  }
+
+  compressed[0] = 'F';
+  compressed[1] = 'C'; // RLE-compressed payload
+  memcpy(&compressed[2], &location, 2);
+  uint16_t compLen = rle_compress(&finger[0], fingerSize, &compressed[4]);
+  uint16_t syncLen = (uint16_t)(compLen + 4);
+
+  DBG_RS485("FP sync: %u bytes (raw %u), scanning addrs 1..%u\r\n",
+            syncLen, (uint16_t)(fingerSize + 4), FINGER_SYNC_MAX_ADDR);
+
+  for (addr = 1; addr <= FINGER_SYNC_MAX_ADDR; addr++) {
+    if (addr == rs485cfg.address) continue;
+    DBG_RS485("FP sync: -> addr %u\r\n", addr);
+    int8_t result = -1;
+    for (uint8_t attempt = 0; attempt < 3 && result != 1; attempt++) {
+      if (attempt > 0)
+        chThdSleepMilliseconds(200);
+      if (RS485D3.trcState == TRC_RECEIVED)
+        rs485GetMsg(&RS485D3, &drainMsg);
+      result = sendDataMultipart(addr, compressed, syncLen);
+    }
+    if (result == 1) {
+      DBG_RS485("FP sync: addr %u OK\r\n", addr);
+      removePendingSyncAddr(location, addr);
+    } else {
+      DBG_RS485("FP sync: addr %u failed\r\n", addr);
+      addPendingSync(location, addr);
+    }
+  }
+}
+
 /*
  * RS485 thread
  */
-static THD_WORKING_AREA(waRS485Thread, 512);
+static THD_WORKING_AREA(waRS485Thread, 1024);
 static THD_FUNCTION(RS485Thread, arg) {
   chRegSetThreadName(arg);
   event_listener_t serialListener;
@@ -104,13 +271,20 @@ static THD_FUNCTION(RS485Thread, arg) {
   // Register
   chEvtRegister((event_source_t *)&RS485D3.event, &serialListener, EVENT_MASK(0));
 
+  retryPendingSyncs();
+
   while (true) {
-    evt = chEvtWaitAny(ALL_EVENTS);
+    // Timed wait allows periodic mpRx timeout checks without a separate thread
+    evt = chEvtWaitAnyTimeout(ALL_EVENTS, TIME_MS2I(1000));
     (void)evt;
 
+    mpRxCheckTimeout(&mpRx);
+
     eventflags_t flags = chEvtGetAndClearFlags(&serialListener);
+    if (flags == 0) continue; // timeout tick, no RS485 event
+
     DBG_RS485("RS485 flag: %u, state: %u, length: %u\r\n", flags, RS485D3.trcState, RS485D3.ibHead);
-    //resp = chBSemWait(&RS485D3.received);
+
     if ((flags & RS485_MSG_RECEIVED) ||
         (flags & RS485_MSG_RECEIVED_WA)){
       resp = rs485GetMsg(&RS485D3, &rs485Msg);
@@ -168,39 +342,85 @@ static THD_FUNCTION(RS485Thread, arg) {
               rtcGetTime(&RTCD1, &timespec);
               DBG_RS485("RTC: Time updated to %u\r\n", convertRTCDateTimeToUnixSecond(&timespec));
               break;
-            case 'F': // Fingerprint
+            case 'F': // Fingerprint command from gateway
               DBG_RS485("RS485: Fingerprint command received\r\n");
               switch (rs485Msg.data[1]) {
-                case 'E': // Enroll
-                  enrollFinger((uint16_t)rs485Msg.data[2]);
+                case 'E': // Enroll, then sync to peer nodes
+                  temp = rs485Msg.data[2]; // save location — rs485Msg may be overwritten below
+                  if (enrollFinger((uint16_t)temp) == R503_OK) {
+                    // Drain any RS485 message that arrived while the thread was
+                    // blocked inside enrollFinger(). Check driver state directly —
+                    // event flags may already be consumed by chEvtWaitAnyTimeout.
+                    // Without this, rs485SendMsgWithACK cannot send (TRC_RECEIVED).
+                    chEvtGetAndClearFlags(&serialListener); // discard stale flags
+                    if (RS485D3.trcState == TRC_RECEIVED)
+                      rs485GetMsg(&RS485D3, &rs485Msg);
+                    syncFingerprintToNodes((uint16_t)temp);
+                    setLastNodeMode(); // re-enable main loop R503 access after sync
+                  }
                   break;
-                case 'D': // Delete
-                  R503DeleteTemplate((uint16_t)rs485Msg.data[2], 1);
-                  // send song to RTTTL thread
+                case 'D': { // Delete
+                  uint8_t delLoc = rs485Msg.data[2];
+                  chBSemWait(&R503Sem);
+                  R503DeleteTemplate((uint16_t)delLoc, 1);
+                  chBSemSignal(&R503Sem);
+                  clearPendingSync((uint16_t)delLoc);
                   chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
+                  // Forward to peers only if the command came from the gateway (not a peer forwarding it)
+                  if (rs485Msg.address == 0)
+                    syncDeleteToNodes((uint16_t)delLoc);
                   break;
-                case 'G': // Get template
+                }
+                case 'G': // Get template (send back to gateway — not yet implemented)
                   temp = downloadTemplate((uint16_t)rs485Msg.data[2], &finger[0], &fingerSize);
                   if (temp == R503_OK) {
                     DBG_RS485("RS485: Fingerprint template downloaded, size %u\r\n", fingerSize);
-                	}
-                	// Compress template
-                	size = rle_compress(&finger[0], fingerSize, &compressed[0]);
-                	if (size > fingerSize) {
+                  }
+                  // Compress template
+                  size = rle_compress(&finger[0], fingerSize, &compressed[0]);
+                  if (size > fingerSize) {
                     DBG_RS485("RS485: Fingerprint template compressed, size %u\r\n", size);
-                	} else {
+                  } else {
                     DBG_RS485("RS485: Fingerprint template not compressed, size %u\r\n", size);
-                	}
-                	// To be implemented: send template back to gateway
+                  }
+                  // To be implemented: send template back to gateway
                   break;
-                case 'S': // Save template
-                	// To be implemented: receive template from gateway and save to location
-                	temp = uploadTemplate((uint16_t)rs485Msg.data[2], &finger[0], fingerSize);
+                case 'S': // Save template (receive from gateway — not yet implemented)
+                  // To be implemented: receive template from gateway and save to location
+                  temp = uploadTemplate((uint16_t)rs485Msg.data[2], &finger[0], fingerSize);
                   break;
                 default:
                   break;
               }
               break;
+            case MP_MARKER: { // Multipart chunk from a peer node
+              int8_t mpResp = mpRxProcess(&mpRx, rs485Msg.address,
+                                           rs485Msg.data, rs485Msg.length,
+                                           compressed, sizeof(compressed));
+              DBG_RS485("MP: chunk from %u, resp=%d\r\n", rs485Msg.address, mpResp);
+              if (mpResp == 1) {
+                DBG_RS485("MP: complete, %u bytes, type='%c%c'\r\n",
+                          mpRx.receivedLength, compressed[0], compressed[1]);
+                if (compressed[0] == 'F' && compressed[1] == 'C') {
+                  // Fingerprint push (RLE-compressed) from peer node
+                  uint16_t loc;
+                  memcpy(&loc, &compressed[2], 2);
+                  uint16_t payloadLen = (uint16_t)(mpRx.receivedLength - 4);
+                  fingerSize = rle_decompress(&compressed[4], payloadLen, &finger[0]);
+                  setNodeMode(MODE_ENROLLMENT); // block main loop from touching R503
+                  if (uploadTemplate(loc, &finger[0], fingerSize) == R503_OK) {
+                    DBG_RS485("FP sync: stored at loc %u, size %u\r\n", loc, fingerSize);
+                    chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
+                  } else {
+                    DBG_RS485("FP sync: upload failed\r\n");
+                  }
+                  setLastNodeMode(); // re-enable main loop R503 access
+                }
+                mpRxReset(&mpRx);
+              } else if (mpResp < 0) {
+                DBG_RS485("MP: chunk error\r\n");
+              }
+            } break;
             default:
               break;
           }

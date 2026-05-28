@@ -18,7 +18,7 @@
 #endif
 
 // This node settings
-#define VERSION         100    // Version of EEPROM struct
+#define VERSION         101    // Version of EEPROM struct
 #define SENSOR_DELAY    600    // In seconds, 600 = 10 minutes
 #define ELEMENTS        1      // How many elements this node has
 
@@ -46,8 +46,6 @@
 #define SONG_AUTH3        ":d=16,o=5,b=120:c"
 #define SONG_ARM_REJECTED ":d=16,o=4,b=80:c#,p,c#,p,c#"
 
-// ChibiOS override
-#define SERIAL_BUFFERS_SIZE 128
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,10 +91,18 @@ uint8_t fingerCount;
 int8_t fingerPassed;
 #endif
 
+// Pending fingerprint sync: addresses that failed during the last enrollment sync
+typedef struct {
+  uint16_t location; // Template location; 0xFFFF = empty slot
+  uint8_t  failMask; // Bit N set = address (N+1) needs retry
+} pending_sync_t;
+#define PENDING_SYNC_SLOTS 8
+
 // Configuration struct
 struct config_t {
   uint16_t version;
   uint8_t reg[REG_LEN * ELEMENTS]; // REG_LEN * #, number of elements on this node
+  pending_sync_t pendingSync[PENDING_SYNC_SLOTS];
 } conf;
 
 // RTTTL thread variables
@@ -243,7 +249,8 @@ int main(void) {
     if (count > 0) {
       count--;
     } else if (count == 0) {
-      // Set LED and song according to mode  
+      // Set LED and song according to mode
+      chBSemWait(&R503Sem);
       switch (nodeState.mode) {
         case MODE_ALARM:
           R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 4);
@@ -277,6 +284,7 @@ int main(void) {
         default:
           break;
       }
+      chBSemSignal(&R503Sem);
       count--;
     } else {
       // Reset count
@@ -291,11 +299,13 @@ int main(void) {
     // Increment finger passed counter
     fingerPassed++;
 
-    // Read fingerprint
+    // Read fingerprint — hold R503Sem to prevent concurrent access from RS485 thread
+    chBSemWait(&R503Sem);
     resp = R503TakeImage();
     if ((resp == R503_OK) && (fingerPassed >= 0)) {
       resp = R503ExtractFeatures(FINGERPRINT_CHAR_BUFFER);
       if (resp != R503_OK) {
+        chBSemSignal(&R503Sem);
         continue;
       } else {
         resp = R503SearchFinger(FINGERPRINT_CHAR_BUFFER, &location, &confidence);
@@ -310,6 +320,7 @@ int main(void) {
         }
       }
     }
+    chBSemSignal(&R503Sem);
 
     // Reset finger passed counter if no finger was found
     if (fingerCount == 0) {

@@ -163,7 +163,7 @@ uint8_t R503SendData(uint8_t *toSendCmd, uint8_t cmdSize, uint8_t sendType, uint
     DBG("pos %d, size %d, type %d \r\n", pos, out.length, out.type);
   } while (out.type == R503_PKT_DATA_START);
 
-  return ret;
+  return R503_OK;
 }
 /**
  * @brief Reads the parameters from the device and stores them in the provided R503Parameters object.
