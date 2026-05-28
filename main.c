@@ -11,6 +11,7 @@
 #define HAS_RS485
 #define HAS_FINGERPRINT
 #define HAS_SERIAL1 // Console UART
+//#define HAS_NFC    // Enable via UDEFS: -DHAS_NFC (requires PN532 on I2C1, IRQ on PB5)
 
 // Sanity checks
 #if defined(HAS_RADIO) && defined(HAS_RS485)
@@ -18,7 +19,7 @@
 #endif
 
 // This node settings
-#define VERSION         101    // Version of EEPROM struct
+#define VERSION         103    // Version of EEPROM struct
 #define SENSOR_DELAY    600    // In seconds, 600 = 10 minutes
 #define ELEMENTS        1      // How many elements this node has
 
@@ -69,6 +70,9 @@ BaseSequentialStream *console = (BaseSequentialStream*) &SD1;
 #endif
 
 binary_semaphore_t R503Sem;
+#ifdef HAS_NFC
+binary_semaphore_t NFCSem;
+#endif
 
 // RFM69
 #ifdef HAS_RADIO
@@ -114,6 +118,9 @@ static msg_t rtttlMailboxBuffer[5]; // Storage for one message (pointer)
 #ifdef HAS_FINGERPRINT
 #include "R503.h"
 #endif
+#ifdef HAS_NFC
+#include "ohs_nfc_pn532.h"
+#endif
 #include "rle.h"
 #include "reg_defaults.h"
 #include "ohs_func.h"
@@ -147,6 +154,9 @@ int main(void) {
   
   // Semaphores
   chBSemObjectInit(&R503Sem, false);
+#ifdef HAS_NFC
+  chBSemObjectInit(&NFCSem, true);  /* taken=true: wait blocks until IRQ fires */
+#endif
   
   // LED
   palSetPadMode(GPIOC, GPIOC_LED, PAL_MODE_OUTPUT_PUSHPULL);
@@ -166,6 +176,11 @@ int main(void) {
   palSetPadMode(GPIOA, GPIOA_TX2, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
   palSetPadMode(GPIOA, GPIOA_RX2, PAL_MODE_INPUT);
 #endif
+#ifdef HAS_NFC
+  palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
+  palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
+  palSetPadMode(GPIOB, GPIOB_PIN5, PAL_MODE_INPUT_PULLUP);
+#endif
 #ifdef HAS_RS485
   palSetPadMode(GPIOB, GPIOB_TX3, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
   palSetPadMode(GPIOB, GPIOB_RX3, PAL_MODE_INPUT);
@@ -181,6 +196,11 @@ int main(void) {
 #ifdef HAS_RS485
   rs485Start(&RS485D3, &rs485cfg);
   DBG("RS485 timeout: %d(uS)/%d(tick)\r\n", RS485D3.oneByteTimeUS, RS485D3.oneByteTimeI);
+#endif
+#ifdef HAS_NFC
+  i2cStart(&I2CD1, &i2c1cfg);
+  palSetLineCallback(PAL_LINE(GPIOB, GPIOB_PIN5), nfcIrqCallback, NULL);
+  palEnableLineEvent(PAL_LINE(GPIOB, GPIOB_PIN5), PAL_EVENT_MODE_FALLING_EDGE);
 #endif
 #ifdef HAS_RADIO
   // SPI
@@ -226,6 +246,13 @@ int main(void) {
 #endif
     chThdSleepMilliseconds(2000);
   }
+#ifdef HAS_NFC
+  while (pn532Init(&I2CD1) != PN532_OK) {
+    DBG("NFC Init error!\r\n");
+    chThdSleepMilliseconds(2000);
+  }
+  DBG("NFC OK\r\n");
+#endif
 
   // Register this node
   sendConf();
@@ -322,15 +349,29 @@ int main(void) {
     }
     chBSemSignal(&R503Sem);
 
+#ifdef HAS_NFC
+    {
+      uint8_t nfcUid[7]; uint8_t nfcLen = 0;
+      bool nfcGotCard = (pn532StartDetect(&I2CD1) == PN532_OK) &&
+                        (chBSemWaitTimeout(&NFCSem, TIME_MS2I(300)) == MSG_OK) &&
+                        (pn532ReadUID(&I2CD1, nfcUid, &nfcLen) == PN532_OK);
+
+      if (nfcGotCard) {
+        DBG("NFC: card UID len=%u\r\n", nfcLen);
+        sendNFCCard(0, 0, nfcUid, nfcLen);
+        chThdSleepMilliseconds(500); /* debounce — prevent duplicate sends */
+      }
+    }
+#endif
+
     // Reset finger passed counter if no finger was found
     if (fingerCount == 0) {
-      fingerPassed = -1; 
+      fingerPassed = -1;
     }
 
     // Check if authentication passed, if armed away or home, only one finger is needed
-    if ((fingerCount) && 
+    if ((fingerCount) &&
         ((fingerPassed > FINGER_PASSED) || (nodeState.mode == MODE_ARMED_AWAY) || (nodeState.mode == MODE_ARMED_HOME))) {
-      // Send authentication message
       sendFinger(0, (fingerCount == 1) ? 0 : 1, location);
       fingerCount = 0;
       fingerPassed = FINGER_PASSED_COOLDOWN;

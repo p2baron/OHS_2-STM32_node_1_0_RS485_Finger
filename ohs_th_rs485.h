@@ -91,6 +91,26 @@ int8_t sendFinger(uint8_t element, uint8_t state, uint16_t fingerId) {
 }
 
 /*
+ * @brief Send NFC card UID authentication message to gateway.
+ * Uses 'N'+'R' prefix — distinct from fingerprint 'F' messages so gateway
+ * can route by auth source without overlap.
+ */
+#ifdef HAS_NFC
+int8_t sendNFCCard(uint8_t element, uint8_t state, const uint8_t *uid, uint8_t uidLen) {
+  msgOut.address = GATEWAYID;
+  msgOut.ctrl = RS485_FLAG_DTA;
+  msgOut.length = (uint8_t)(7 + uidLen); /* reg[0]+reg[1]+state+"nfc"+uidLen+uid */
+  msgOut.data[0] = conf.reg[(REG_LEN*element)];
+  msgOut.data[1] = conf.reg[1+(REG_LEN*element)];
+  msgOut.data[2] = state;
+  memcpy(&msgOut.data[3], "nfc", 3);
+  msgOut.data[6] = uidLen;
+  memcpy(&msgOut.data[7], uid, uidLen);
+  return (int8_t)rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
+}
+#endif
+
+/*
  * Low-level RS485 data send — required by sendDataMultipart() in ohs_multipart.h.
  * Reuses the global msgOut to keep stack usage minimal.
  */
@@ -348,6 +368,10 @@ static THD_FUNCTION(RS485Thread, arg) {
                 case 'E': // Enroll, then sync to peer nodes
                   temp = rs485Msg.data[2]; // save location — rs485Msg may be overwritten below
                   if (enrollFinger((uint16_t)temp) == R503_OK) {
+                    // Keep LED on during sync so the unit doesn't appear dead
+                    chBSemWait(&R503Sem);
+                    R503SetAuraLED(aLEDModeON, aLEDGreen, 50, 0);
+                    chBSemSignal(&R503Sem);
                     // Drain any RS485 message that arrived while the thread was
                     // blocked inside enrollFinger(). Check driver state directly —
                     // event flags may already be consumed by chEvtWaitAnyTimeout.
@@ -421,6 +445,8 @@ static THD_FUNCTION(RS485Thread, arg) {
                 DBG_RS485("MP: chunk error\r\n");
               }
             } break;
+            case 'N': // NFC gateway commands — reserved for future enrollment/delete
+              break;
             default:
               break;
           }

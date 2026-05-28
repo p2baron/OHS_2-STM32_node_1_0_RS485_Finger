@@ -73,4 +73,12 @@ static RS485Config rs485cfg = {
 };
 #endif
 
+#ifdef HAS_NFC
+static const I2CConfig i2c1cfg = {
+  OPMODE_I2C,
+  100000,
+  STD_DUTY_CYCLE,
+};
+#endif
+
 #endif /* OHS_PERIPHERAL_H_ */
