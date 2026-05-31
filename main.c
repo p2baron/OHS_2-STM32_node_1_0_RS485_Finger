@@ -19,9 +19,10 @@
 #endif
 
 // This node settings
-#define VERSION         103    // Version of EEPROM struct
+#define VERSION         104    // Version of EEPROM struct
 #define SENSOR_DELAY    600    // In seconds, 600 = 10 minutes
 #define ELEMENTS        1      // How many elements this node has
+#define FINGERS_SIZE    20     // Must match gateway FINGERS_SIZE
 
 // Constants
 #define REG_LEN         21   // Size of one conf. element
@@ -107,6 +108,7 @@ struct config_t {
   uint16_t version;
   uint8_t reg[REG_LEN * ELEMENTS]; // REG_LEN * #, number of elements on this node
   pending_sync_t pendingSync[PENDING_SYNC_SLOTS];
+  uint16_t fpId[FINGERS_SIZE];     // gateway-assigned ID per slot; 0 = no template
 } conf;
 
 // RTTTL thread variables
@@ -120,6 +122,9 @@ static msg_t rtttlMailboxBuffer[5]; // Storage for one message (pointer)
 #endif
 #ifdef HAS_NFC
 #include "ohs_nfc_pn532.h"
+#endif
+#ifdef HAS_DISPLAY
+#include "ohs_ssd1309.h"
 #endif
 #include "rle.h"
 #include "reg_defaults.h"
@@ -145,6 +150,9 @@ RS485Msg_t msgOut;
 #include "ohs_th_service.h"
 #include "ohs_th_rtttl.h"
 #include "ohs_th_blinker.h"
+#ifdef HAS_DISPLAY
+#include "ohs_th_display.h"
+#endif
 /*
  * Application entry point.
  */
@@ -202,6 +210,26 @@ int main(void) {
   palSetLineCallback(PAL_LINE(GPIOB, GPIOB_PIN5), nfcIrqCallback, NULL);
   palEnableLineEvent(PAL_LINE(GPIOB, GPIOB_PIN5), PAL_EVENT_MODE_FALLING_EDGE);
 #endif
+#ifdef HAS_DISPLAY
+  /* I2C bus recovery before starting the peripheral.
+   * Uses a busy-wait loop (no scheduler needed) to generate 9 SCL pulses,
+   * releasing any SDA stuck-low condition from a previous session.
+   * Required to work around STM32F103 I2C BUSY-flag silicon bug. */
+  { volatile uint32_t d;
+    palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_OUTPUT_OPENDRAIN);
+    palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_OUTPUT_OPENDRAIN);
+    palSetPad(GPIOB, GPIOB_SDA1); // SDA high
+    for (uint8_t bi = 0; bi < 9; bi++) {
+      palClearPad(GPIOB, GPIOB_SCL1); for (d = 720; d; d--); // ~10µs@72MHz
+      palSetPad(GPIOB,  GPIOB_SCL1); for (d = 720; d; d--);
+    }
+    palClearPad(GPIOB, GPIOB_SDA1); for (d = 720; d; d--); // STOP: SDA rises while SCL high
+    palSetPad(GPIOB,  GPIOB_SDA1); for (d = 720; d; d--);
+    palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
+    palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
+  }
+  i2cStart(&I2CD1, &i2c1cfg);
+#endif
 #ifdef HAS_RADIO
   // SPI
   spiStart(&SPID1, &spi1cfg);
@@ -236,6 +264,9 @@ int main(void) {
   chThdCreateStatic(waServiceThread, sizeof(waServiceThread), NORMALPRIO - 1, ServiceThread, (void*) "service");
   chThdCreateStatic(waBlinkerThread, sizeof(waBlinkerThread), NORMALPRIO - 2, BlinkerThread, (void*) "blinker");
   chThdCreateStatic(waRTTTLThread, sizeof(waRTTTLThread), NORMALPRIO, RTTTLThread, (void*) "rtttl");
+#ifdef HAS_DISPLAY
+  chThdCreateStatic(waDisplayThread, sizeof(waDisplayThread), LOWPRIO, DisplayThread, NULL);
+#endif
 
   // Initialize tone generation
   toneInit();
@@ -262,6 +293,7 @@ int main(void) {
 
   // Initialize counters
   int8_t count = -1;
+  uint32_t lastBeepSec = 0; // RTC second when synchronized beep last fired
   fingerCount = 0;
   fingerPassed = 0;
   // Main loop
@@ -273,6 +305,26 @@ int main(void) {
       currentMode = nodeState.mode;
       DBG("Mode changed to %d\r\n", nodeState.mode);
     }
+
+    /* Synchronized beep — fires at even RTC seconds so both nodes beep together.
+     * Both nodes share the same clock via gateway 'T' beacons. */
+    {
+      RTCDateTime _ts;
+      rtcGetTime(&RTCD1, &_ts);
+      uint32_t nowSec = convertRTCDateTimeToUnixSecond(&_ts);
+      if ((nowSec % 2 == 0) && (nowSec != lastBeepSec)) {
+        lastBeepSec = nowSec;
+        switch (nodeState.mode) {
+          case MODE_ALARM:  chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ALARM,  TIME_IMMEDIATE); break;
+          case MODE_ARMING: chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ARMING, TIME_IMMEDIATE); break;
+          case MODE_AUTH_1: chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH1,  TIME_IMMEDIATE); break;
+          case MODE_AUTH_2: chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH2,  TIME_IMMEDIATE); break;
+          case MODE_AUTH_3: chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH3,  TIME_IMMEDIATE); break;
+          default: break;
+        }
+      }
+    }
+
     if (count > 0) {
       count--;
     } else if (count == 0) {
@@ -281,32 +333,37 @@ int main(void) {
       switch (nodeState.mode) {
         case MODE_ALARM:
           R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 4);
-          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ALARM, TIME_IMMEDIATE);
           break;
         case MODE_AUTH_1:
           R503SetAuraLED(aLEDModeFlash, aLEDRed, 100, 1);
-          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH1, TIME_IMMEDIATE);
           break;
         case MODE_AUTH_2:
           R503SetAuraLED(aLEDModeFlash, aLEDRed, 150, 1);
-          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH2, TIME_IMMEDIATE);
           break;
         case MODE_AUTH_3:
           R503SetAuraLED(aLEDModeFlash, aLEDRed, 200, 1);
-          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_AUTH3, TIME_IMMEDIATE);
           break;
         case MODE_ARMING:
           R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 1);
-          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ARMING, TIME_IMMEDIATE);
           break;
         case MODE_ARMED_AWAY:
-          R503SetAuraLED(aLEDModeBreathing, aLEDRed, 50, 2);
+          R503SetAuraLED(aLEDModeBreathing, aLEDRed, 150, 0); // medium breathing red (infinite)
           break;
-        case MODE_DISARMED:
-          R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 50, 1);
+        case MODE_DISARMED: {
+          // Solid white if connected, blink white if gateway not responding
+          bool gwOk = (lastGwContact != 0) &&
+                      (chTimeDiffX(lastGwContact, chVTGetSystemTimeX()) < GW_TIMEOUT_TICKS);
+          if (gwOk)
+            R503SetAuraLED(aLEDModeON, aLEDWhite, 255, 0);   // permanent white
+          else
+            R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0); // blink white = no contact
           break;
+        }
         case MODE_ARMED_HOME:
-          R503SetAuraLED(aLEDModeBreathing, aLEDYellow, 50, 2);
+          R503SetAuraLED(aLEDModeBreathing, aLEDPurple, 50, 0); // slow breathing purple (infinite)
+          break;
+        case MODE_UNINITIALIZED:
+          R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0); // medium blink white (not connected)
           break;
         default:
           break;

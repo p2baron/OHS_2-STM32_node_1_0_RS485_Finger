@@ -320,6 +320,8 @@ static THD_FUNCTION(RS485Thread, arg) {
       DBG_RS485("\r\n");
 
       if (resp == MSG_OK) {
+        // Update gateway contact timestamp on any message from gateway
+        if (rs485Msg.address == GATEWAYID) lastGwContact = chVTGetSystemTimeX();
         // Commands
         if (rs485Msg.ctrl == RS485_FLAG_CMD) {
           switch (rs485Msg.length) {
@@ -328,9 +330,19 @@ static THD_FUNCTION(RS485Thread, arg) {
               break;
             case NODE_CMD_ARMING ... NODE_CMD_ARMED_HOME : // Mode commands
               setNodeMode((authMode_t)(rs485Msg.length));
+#ifdef HAS_DISPLAY
+              // Reset countdown max when entering idle states (fresh next delay)
+              if (rs485Msg.length == NODE_CMD_DISARMED || rs485Msg.length == NODE_CMD_ARMED_AWAY
+                  || rs485Msg.length == NODE_CMD_ARMED_HOME)
+                dispCountdownMax = 0;
+#endif
               break;
             case NODE_CMD_ARM_REJECTED: // Arm rejected, just play sound
               chMBPostTimeout(&rtttlMailbox, (msg_t) SONG_ARM_REJECTED, TIME_IMMEDIATE);
+#ifdef HAS_DISPLAY
+              dispHoldMode  = NODE_ARM_REJECTED;
+              dispHoldTicks = 24; // 6 seconds — zone name arrives slightly after the command
+#endif
               break;
             default: break;
           }
@@ -365,13 +377,16 @@ static THD_FUNCTION(RS485Thread, arg) {
             case 'F': // Fingerprint command from gateway
               DBG_RS485("RS485: Fingerprint command received\r\n");
               switch (rs485Msg.data[1]) {
-                case 'E': // Enroll, then sync to peer nodes
+                case 'E': // Enroll, then upload template to gateway
                   temp = rs485Msg.data[2]; // save location — rs485Msg may be overwritten below
+#ifdef HAS_DISPLAY
+                  dispEnrollSlot = temp;
+#endif
+                  DBG_RS485("RS485: Enroll cmd slot %u\r\n", temp);
                   if (enrollFinger((uint16_t)temp) == R503_OK) {
-                    // Keep LED on during sync so the unit doesn't appear dead
+                    DBG_RS485("RS485: enrollFinger OK\r\n");
                     chBSemWait(&R503Sem);
                     R503SetAuraLED(aLEDModeON, aLEDGreen, 50, 0);
-                    chBSemSignal(&R503Sem);
                     // Drain any RS485 message that arrived while the thread was
                     // blocked inside enrollFinger(). Check driver state directly —
                     // event flags may already be consumed by chEvtWaitAnyTimeout.
@@ -379,8 +394,25 @@ static THD_FUNCTION(RS485Thread, arg) {
                     chEvtGetAndClearFlags(&serialListener); // discard stale flags
                     if (RS485D3.trcState == TRC_RECEIVED)
                       rs485GetMsg(&RS485D3, &rs485Msg);
-                    syncFingerprintToNodes((uint16_t)temp);
-                    setLastNodeMode(); // re-enable main loop R503 access after sync
+                    // Download and upload template to gateway (addr 0)
+                    if (downloadTemplate((uint16_t)temp, &finger[0], &fingerSize) == R503_OK) {
+                      compressed[0] = 'F'; compressed[1] = 'U';
+                      compressed[2] = (uint8_t)temp; compressed[3] = 0;
+                      size = rle_compress(&finger[0], fingerSize, &compressed[4]);
+                      if (size >= fingerSize) { // RLE expanded — send raw
+                        memcpy(&compressed[4], &finger[0], fingerSize);
+                        size = fingerSize;
+                      }
+                      sendDataMultipart(GATEWAYID, compressed, (uint16_t)(size + 4));
+                      DBG_RS485("RS485: FP enrolled slot %u, uploaded %u bytes to GW\r\n", temp, size);
+#ifdef HAS_DISPLAY
+                      dispEnrollStep = 4; // "OK!"
+                      dispHoldMode   = MODE_ENROLLMENT;
+                      dispHoldTicks  = 12; // 3 seconds
+#endif
+                    }
+                    chBSemSignal(&R503Sem);
+                    setLastNodeMode(); // re-enable main loop R503 access
                   }
                   break;
                 case 'D': { // Delete
@@ -389,29 +421,50 @@ static THD_FUNCTION(RS485Thread, arg) {
                   R503DeleteTemplate((uint16_t)delLoc, 1);
                   chBSemSignal(&R503Sem);
                   clearPendingSync((uint16_t)delLoc);
+                  if (delLoc < FINGERS_SIZE) { conf.fpId[delLoc] = 0; writeToFlash(&conf, sizeof(conf)); }
                   chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
                   // Forward to peers only if the command came from the gateway (not a peer forwarding it)
                   if (rs485Msg.address == 0)
                     syncDeleteToNodes((uint16_t)delLoc);
                   break;
                 }
-                case 'G': // Get template (send back to gateway — not yet implemented)
-                  temp = downloadTemplate((uint16_t)rs485Msg.data[2], &finger[0], &fingerSize);
-                  if (temp == R503_OK) {
-                    DBG_RS485("RS485: Fingerprint template downloaded, size %u\r\n", fingerSize);
+                case 'A': // Flush all templates from R503 sensor
+                  chBSemWait(&R503Sem);
+                  R503EmptyLibrary();
+                  chBSemSignal(&R503Sem);
+                  for (uint8_t si = 0; si < PENDING_SYNC_SLOTS; si++) {
+                    conf.pendingSync[si].location = 0xFFFF;
+                    conf.pendingSync[si].failMask = 0;
                   }
-                  // Compress template
-                  size = rle_compress(&finger[0], fingerSize, &compressed[0]);
-                  if (size > fingerSize) {
-                    DBG_RS485("RS485: Fingerprint template compressed, size %u\r\n", size);
-                  } else {
-                    DBG_RS485("RS485: Fingerprint template not compressed, size %u\r\n", size);
-                  }
-                  // To be implemented: send template back to gateway
+                  memset(conf.fpId, 0, sizeof(conf.fpId));
+                  writeToFlash(&conf, sizeof(conf));
+                  DBG_RS485("RS485: FP flush done\r\n");
+                  chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
                   break;
-                case 'S': // Save template (receive from gateway — not yet implemented)
-                  // To be implemented: receive template from gateway and save to location
-                  temp = uploadTemplate((uint16_t)rs485Msg.data[2], &finger[0], fingerSize);
+                case 'G': // Get specific template, send back to requester
+                  chBSemWait(&R503Sem);
+                  temp = downloadTemplate((uint16_t)rs485Msg.data[2], &finger[0], &fingerSize);
+                  chBSemSignal(&R503Sem);
+                  if (temp == R503_OK) {
+                    compressed[0] = 'F'; compressed[1] = 'G';
+                    compressed[2] = rs485Msg.data[2]; compressed[3] = 0;
+                    size = rle_compress(&finger[0], fingerSize, &compressed[4]);
+                    if (size >= fingerSize) {
+                      memcpy(&compressed[4], &finger[0], fingerSize);
+                      size = fingerSize;
+                    }
+                    sendDataMultipart(rs485Msg.address, compressed, (uint16_t)(size + 4));
+                    DBG_RS485("RS485: FP get slot %u sent %u bytes\r\n", rs485Msg.data[2], size);
+                  }
+                  break;
+                case 'Q': // Query — send ID table to gateway
+                  msgOut.address = GATEWAYID;
+                  msgOut.ctrl = RS485_FLAG_DTA;
+                  msgOut.data[0] = 'F'; msgOut.data[1] = 'I';
+                  memcpy(&msgOut.data[2], &conf.fpId[0], FINGERS_SIZE * sizeof(uint16_t));
+                  msgOut.length = 2 + FINGERS_SIZE * sizeof(uint16_t);
+                  rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
+                  DBG_RS485("RS485: FP ID table sent to GW\r\n");
                   break;
                 default:
                   break;
@@ -426,15 +479,26 @@ static THD_FUNCTION(RS485Thread, arg) {
                 DBG_RS485("MP: complete, %u bytes, type='%c%c'\r\n",
                           mpRx.receivedLength, compressed[0], compressed[1]);
                 if (compressed[0] == 'F' && compressed[1] == 'C') {
-                  // Fingerprint push (RLE-compressed) from peer node
-                  uint16_t loc;
-                  memcpy(&loc, &compressed[2], 2);
-                  uint16_t payloadLen = (uint16_t)(mpRx.receivedLength - 4);
-                  fingerSize = rle_decompress(&compressed[4], payloadLen, &finger[0]);
+                  // Fingerprint push from gateway (6-byte header: 'F','C',slot_lo,slot_hi,id_lo,id_hi)
+                  uint16_t loc, fpid;
+                  memcpy(&loc,  &compressed[2], 2);
+                  memcpy(&fpid, &compressed[4], 2);
+                  uint16_t payloadLen = (uint16_t)(mpRx.receivedLength - 6);
+                  fingerSize = rle_decompress(&compressed[6], payloadLen, &finger[0]);
                   setNodeMode(MODE_ENROLLMENT); // block main loop from touching R503
                   if (uploadTemplate(loc, &finger[0], fingerSize) == R503_OK) {
-                    DBG_RS485("FP sync: stored at loc %u, size %u\r\n", loc, fingerSize);
+                    if (loc < FINGERS_SIZE) {
+                      conf.fpId[loc] = fpid;
+                      writeToFlash(&conf, sizeof(conf));
+                    }
+                    DBG_RS485("FP sync: stored at loc %u id %u, size %u\r\n", loc, fpid, fingerSize);
                     chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
+#ifdef HAS_DISPLAY
+                    dispEnrollSlot = (uint8_t)loc;
+                    dispEnrollStep = 5; // "SYNCING / Received" (gateway push, not finger scan)
+                    dispHoldMode   = MODE_ENROLLMENT;
+                    dispHoldTicks  = 8; // 2 seconds
+#endif
                   } else {
                     DBG_RS485("FP sync: upload failed\r\n");
                   }
@@ -447,6 +511,24 @@ static THD_FUNCTION(RS485Thread, arg) {
             } break;
             case 'N': // NFC gateway commands — reserved for future enrollment/delete
               break;
+#ifdef HAS_DISPLAY
+            case 'D': // Display control from gateway
+              switch (rs485Msg.data[1]) {
+                case 'E': // Exit delay (arming countdown)
+                  dispCountdownSecs = rs485Msg.data[2];
+                  dispCountdownMax  = rs485Msg.data[2];
+                  break;
+                case 'I': // Entry delay — send total remaining; only grow Max for bar scaling
+                  dispCountdownSecs = rs485Msg.data[2];
+                  if (rs485Msg.data[2] > dispCountdownMax) dispCountdownMax = rs485Msg.data[2];
+                  break;
+                case 'Z': // Zone name blocking arm
+                  strncpy(dispZoneName, (char*)&rs485Msg.data[2], 16);
+                  dispZoneName[16] = '\0';
+                  break;
+              }
+              break;
+#endif
             default:
               break;
           }

@@ -112,9 +112,13 @@ uint8_t enrollFinger(uint16_t location) {
   uint8_t ret;
 
   setNodeMode(MODE_ENROLLMENT);
+  chBSemWait(&R503Sem); // wait for main loop to finish any in-progress R503 op
 
   // Capture FEATURE_COUNT images
   for (int i = 1; i <= FEATURE_COUNT; i++) {
+#ifdef HAS_DISPLAY
+    dispEnrollStep = (i == 1) ? 0 : 2; // "Place finger" or "Place again"
+#endif
     R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 255);
     DBG_FUNC(">> Place finger on sensor...\r\n");
     uint8_t attempts = 0;
@@ -123,6 +127,7 @@ uint8_t enrollFinger(uint16_t location) {
         DBG_FUNC("[X] Enrollment timeout, aborting\r\n");
         R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
         chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
+        chBSemSignal(&R503Sem);
         setLastNodeMode();
         return R503_TIMEOUT;
       }
@@ -154,12 +159,18 @@ uint8_t enrollFinger(uint16_t location) {
       break;
     }
 
+#ifdef HAS_DISPLAY
+    dispEnrollStep = 1; // "Remove finger"
+#endif
     DBG_FUNC("Lift your finger from the sensor!\r\n");
     while (R503TakeImage() != R503_NO_FINGER) {
       chThdSleepMilliseconds(100);
     }
   }
 
+#ifdef HAS_DISPLAY
+  dispEnrollStep = 3; // "Creating..."
+#endif
   DBG_FUNC(" >> Creating template...\r\n");
   R503SetAuraLED(aLEDModeBreathing, aLEDPurple, 100, 255);
   chThdSleepMilliseconds(100);
@@ -168,8 +179,8 @@ uint8_t enrollFinger(uint16_t location) {
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to create a template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
-    // send song to RTTTL thread
     chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
+    chBSemSignal(&R503Sem);
     setLastNodeMode();
     return ret;
   } else {
@@ -181,8 +192,8 @@ uint8_t enrollFinger(uint16_t location) {
   if (ret != R503_OK) {
     DBG_FUNC("[X] Failed to store the template (code: 0x%02X)\r\n", ret);
     R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 3);
-    // send song to RTTTL thread
     chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
+    chBSemSignal(&R503Sem);
     setLastNodeMode();
     return ret;
   }
@@ -190,8 +201,8 @@ uint8_t enrollFinger(uint16_t location) {
   R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 255, 1);
   DBG_FUNC(" >> Template stored at location: %d\r\n", location);
 
-  // send song to RTTTL thread
   chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_OK, TIME_IMMEDIATE);
+  chBSemSignal(&R503Sem);
   // NOTE: caller must call setLastNodeMode() after sync to keep MODE_ENROLLMENT
   // active and prevent the main loop from touching the R503 during template download.
   return R503_OK;

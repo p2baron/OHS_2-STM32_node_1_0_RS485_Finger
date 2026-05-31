@@ -24,6 +24,7 @@ void setDefault(void) {
     conf.pendingSync[i].location = 0xFFFF;
     conf.pendingSync[i].failMask = 0;
   }
+  memset(conf.fpId, 0, sizeof(conf.fpId));
 }
 
 #endif /* REG_DEFAULTS_H_ */
