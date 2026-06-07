@@ -192,9 +192,13 @@ static void ssd1309Init(void) {
     0xAF,    // display on
   };
 
-  /* If I2C bus still busy after recovery, don't probe (avoids STM32F103 BUSY lockup) */
-  if (I2C1->SR2 & I2C_SR2_BUSY) {
-    DBG("SSD1309: I2C busy, skipping\r\n");
+  /* main.c releases I2C1 (i2cStop) at boot if the bus never came up clean —
+   * a stuck-busy peripheral floods the NVIC with high-priority error IRQs
+   * that disrupt the buzzer/sensor, so it's better left off. Mirror that
+   * decision here via driver state rather than re-reading SR2_BUSY, since
+   * the peripheral may now be unclocked. */
+  if (I2CD1.state != I2C_READY) {
+    DBG("SSD1309: I2C1 not ready, skipping\r\n");
     return;
   }
   static const uint8_t addrs[2] = {0x3C, 0x3D};

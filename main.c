@@ -159,7 +159,19 @@ RS485Msg_t msgOut;
 int main(void) {
   halInit();
   chSysInit();
-  
+
+#if defined(HAS_DISPLAY) || defined(HAS_NFC)
+  /* GPIOB_SCL1/SDA1 (board.h) are PB8/PB9, but I2C1's *default* pins are
+   * PB6/PB7 — reaching PB8/PB9 requires AFIO_MAPR.I2C1_REMAP, which neither
+   * this firmware nor the board's (empty) boardInit() ever sets. Without it
+   * the I2C1 peripheral stays wired to PB6/PB7 regardless of how we
+   * configure PB8/PB9 — and PB6 is GPIOB_PIN_TONE (the buzzer's TIM4_CH1
+   * PWM output), so I2C1 ends up "watching" the buzzer's PWM toggle as if
+   * it were SCL, instantly latching BUSY. Set the remap before any I2C1
+   * pin configuration so the peripheral actually lands on PB8/PB9. */
+  AFIO->MAPR |= AFIO_MAPR_I2C1_REMAP;
+#endif
+
   // Semaphores
   chBSemObjectInit(&R503Sem, false);
 #ifdef HAS_NFC
@@ -211,24 +223,66 @@ int main(void) {
   palEnableLineEvent(PAL_LINE(GPIOB, GPIOB_PIN5), PAL_EVENT_MODE_FALLING_EDGE);
 #endif
 #ifdef HAS_DISPLAY
-  /* I2C bus recovery before starting the peripheral.
-   * Uses a busy-wait loop (no scheduler needed) to generate 9 SCL pulses,
-   * releasing any SDA stuck-low condition from a previous session.
-   * Required to work around STM32F103 I2C BUSY-flag silicon bug. */
-  { volatile uint32_t d;
-    palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_OUTPUT_OPENDRAIN);
-    palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_OUTPUT_OPENDRAIN);
-    palSetPad(GPIOB, GPIOB_SDA1); // SDA high
-    for (uint8_t bi = 0; bi < 9; bi++) {
-      palClearPad(GPIOB, GPIOB_SCL1); for (d = 720; d; d--); // ~10µs@72MHz
-      palSetPad(GPIOB,  GPIOB_SCL1); for (d = 720; d; d--);
+  /* I2C1 bring-up with bus recovery and a health check.
+   *
+   * The real fix for I2C1 on this board is the AFIO_MAPR.I2C1_REMAP bit set
+   * above: without it the peripheral stays wired to its default PB6/PB7
+   * pins — and PB6 is the buzzer's PWM output (GPIOB_PIN_TONE/TIM4_CH1), so
+   * I2C1 was "watching" the buzzer's PWM toggle as if it were SCL, latching
+   * I2C_SR2_BUSY permanently and flooding the NVIC with error interrupts at
+   * priority 5 — high enough to preempt and starve the buzzer's PWM (prio 7)
+   * and the R503 sensor's UART (prio 12). That's what produced the garbled
+   * buzzer / unresponsive sensor regardless of whether an OLED was attached.
+   * With the remap in place I2C1 actually lands on PB8/PB9 and comes up
+   * BUSY=0 on the first try.
+   *
+   * The block below is a defensive fallback for the unrelated, normal I2C
+   * case where a slave is genuinely holding the bus low at boot (e.g. mid
+   * transaction across a reset): bit-bang 9 SCL pulses + STOP to free it,
+   * let the bus settle, then start the peripheral and check BUSY — retrying
+   * once with a full recovery cycle. If it's still stuck after that, fully
+   * release I2C1 (i2cStop gates its clock and NVIC vectors) and detach the
+   * pins to plain inputs so nothing inside the chip can hold the bus down —
+   * a missing display beats a corrupted buzzer/sensor. ohs_ssd1309.h checks
+   * I2CD1.state before probing, so it skips cleanly when this happens. */
+  {
+    bool i2c1Healthy = false;
+    for (uint8_t attempt = 0; attempt < 2; attempt++) {
+      volatile uint32_t d;
+      i2cStop(&I2CD1); // no-op if not yet started; forces a clean slate on retry
+      palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_OUTPUT_OPENDRAIN);
+      palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_OUTPUT_OPENDRAIN);
+      palSetPad(GPIOB, GPIOB_SDA1); // SDA high
+      for (uint8_t bi = 0; bi < 9; bi++) {
+        palClearPad(GPIOB, GPIOB_SCL1); for (d = 720; d; d--); // ~10µs@72MHz
+        palSetPad(GPIOB,  GPIOB_SCL1); for (d = 720; d; d--);
+      }
+      palClearPad(GPIOB, GPIOB_SDA1); for (d = 720; d; d--); // START: SDA falls while SCL high
+      palSetPad(GPIOB,  GPIOB_SDA1); for (d = 720; d; d--);  // STOP:  SDA rises while SCL high
+      palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
+      palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
+      for (d = 7200; d; d--); // ~100µs settle: let pull-ups restore idle-high before i2cStart samples
+
+      i2cStart(&I2CD1, &i2c1cfg);
+      if (!(I2C1->SR2 & I2C_SR2_BUSY)) {
+        i2c1Healthy = true;
+        break;
+      }
     }
-    palClearPad(GPIOB, GPIOB_SDA1); for (d = 720; d; d--); // STOP: SDA rises while SCL high
-    palSetPad(GPIOB,  GPIOB_SDA1); for (d = 720; d; d--);
-    palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
-    palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
+    if (!i2c1Healthy) {
+      DBG("I2C1: bus stuck busy after recovery, releasing peripheral\r\n");
+      i2cStop(&I2CD1);
+      /* i2cStop only gates I2C1's clock — the pins are still routed to its
+       * (now frozen) output stage. If the peripheral's internal logic was
+       * mid-assertion of "pull this line low" when its clock stopped, that
+       * can stay latched combinationally and keep sinking the bus through
+       * the GPIO driver (~25-30R), with no external short or missing
+       * pull-up needed to explain it. Detach the pins from the peripheral
+       * entirely so only the external pull-ups govern their level. */
+      palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_INPUT);
+      palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_INPUT);
+    }
   }
-  i2cStart(&I2CD1, &i2c1cfg);
 #endif
 #ifdef HAS_RADIO
   // SPI
