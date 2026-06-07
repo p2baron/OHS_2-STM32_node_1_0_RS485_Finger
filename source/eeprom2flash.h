@@ -15,7 +15,7 @@
 /*
  * Our Definitions
  */
-#define FLASH_TOT_SIZE  0x10000  // 64kB
+#define FLASH_TOT_SIZE  0x20000  // 128kB (this chip; was 64kB which placed FLASH_EE_REGION mid-flash)
 // Could be (FLASH_BANK1_END - FLASH_BASE) but ChibiOS would need proper chip definition.
 #if defined(STM32F10X_HD) || defined(STM32F10X_XL)
   #define FLASH_PAGE_SIZE 0x800  // 2kB for high/XL density
