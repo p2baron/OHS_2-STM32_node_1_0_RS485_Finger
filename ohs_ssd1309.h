@@ -148,7 +148,9 @@ static const uint8_t ssd1309Expand[16] = {
  * ------------------------------------------------------------------------- */
 
 static void _ssd1309TxCmd(const uint8_t *cmds, uint8_t len) {
+  i2cAcquireBus(&I2CD1);
   i2cMasterTransmitTimeout(&I2CD1, dispAddr, cmds, len, NULL, 0, TIME_MS2I(10));
+  i2cReleaseBus(&I2CD1);
 }
 
 /* Set page-addressing cursor to (page, col) */
@@ -206,7 +208,9 @@ static void ssd1309Init(void) {
   dispPresent = false;
   DBG("SSD1309: probing...\r\n");
   for (uint8_t ai = 0; ai < 2; ai++) {
+    i2cAcquireBus(&I2CD1);
     msg_t r = i2cMasterTransmitTimeout(&I2CD1, addrs[ai], probe, 1, NULL, 0, TIME_MS2I(10));
+    i2cReleaseBus(&I2CD1);
     if (r == MSG_OK) {
       DBG("SSD1309: ACK at 0x%02X\r\n", addrs[ai]);
       dispAddr    = addrs[ai];
@@ -232,7 +236,9 @@ static void ssd1309Clear(void) {
   memset(&buf[1], 0x00, 128);
   for (uint8_t page = 0; page < 8; page++) {
     _ssd1309SetPos(page, 0);
+    i2cAcquireBus(&I2CD1);
     i2cMasterTransmitTimeout(&I2CD1, dispAddr, buf, 129, NULL, 0, TIME_MS2I(100));
+    i2cReleaseBus(&I2CD1);
   }
 }
 
@@ -259,7 +265,9 @@ static void ssd1309Print(uint8_t page, const char *s) {
   }
   memset(&txBuf[1 + col], 0x00, 126 - col); // pad to end of line
   _ssd1309SetPos(page, 0);
+  i2cAcquireBus(&I2CD1);
   i2cMasterTransmitTimeout(&I2CD1, dispAddr, txBuf, 127, NULL, 0, TIME_MS2I(50));
+  i2cReleaseBus(&I2CD1);
 }
 
 /*
@@ -272,7 +280,9 @@ static void ssd1309Hline(uint8_t page) {
   buf[0] = 0x40;
   memset(&buf[1], 0x01, 128); // single pixel row at top of page
   _ssd1309SetPos(page, 0);
+  i2cAcquireBus(&I2CD1);
   i2cMasterTransmitTimeout(&I2CD1, dispAddr, buf, 129, NULL, 0, TIME_MS2I(100));
+  i2cReleaseBus(&I2CD1);
 }
 
 /*
@@ -312,9 +322,13 @@ static void ssd1309PrintBig(uint8_t page, const char *s) {
   memset(&botBuf[1 + col], 0, 120 - col);
 
   _ssd1309SetPos(page,     0);
+  i2cAcquireBus(&I2CD1);
   i2cMasterTransmitTimeout(&I2CD1, dispAddr, topBuf, 121, NULL, 0, TIME_MS2I(50));
+  i2cReleaseBus(&I2CD1);
   _ssd1309SetPos(page + 1, 0);
+  i2cAcquireBus(&I2CD1);
   i2cMasterTransmitTimeout(&I2CD1, dispAddr, botBuf, 121, NULL, 0, TIME_MS2I(50));
+  i2cReleaseBus(&I2CD1);
 }
 
 /*
@@ -346,7 +360,9 @@ static void ssd1309Bar(uint8_t page, uint8_t percent) {
       }
       n++; px++;
     }
+    i2cAcquireBus(&I2CD1);
     i2cMasterTransmitTimeout(&I2CD1, dispAddr, buf, n + 1, NULL, 0, TIME_MS2I(10));
+    i2cReleaseBus(&I2CD1);
   }
 }
 
