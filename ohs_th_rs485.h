@@ -92,20 +92,23 @@ int8_t sendFinger(uint8_t element, uint8_t state, uint16_t fingerId) {
 
 /*
  * @brief Send NFC card UID authentication message to gateway.
- * Uses 'N'+'R' prefix — distinct from fingerprint 'F' messages so gateway
- * can route by auth source without overlap.
+ * Layout matches the generic key/iButton message the gateway hashes via
+ * checkKey(): [reg0][reg1][state][raw UID bytes...][trailer]. The gateway
+ * hashes rs485Msg.length-4 bytes starting at data[3] (sdbmHash), so the raw
+ * card UID becomes the unique key ID — same uniqueness/linking machinery as
+ * iButton keys, distinguished from genuine fingerprint messages (which carry
+ * a "finger" tag at data[3..8]) by content, not by a separate element/marker.
  */
 #ifdef HAS_NFC
 int8_t sendNFCCard(uint8_t element, uint8_t state, const uint8_t *uid, uint8_t uidLen) {
   msgOut.address = GATEWAYID;
   msgOut.ctrl = RS485_FLAG_DTA;
-  msgOut.length = (uint8_t)(7 + uidLen); /* reg[0]+reg[1]+state+"nfc"+uidLen+uid */
+  msgOut.length = (uint8_t)(4 + uidLen);
   msgOut.data[0] = conf.reg[(REG_LEN*element)];
   msgOut.data[1] = conf.reg[1+(REG_LEN*element)];
   msgOut.data[2] = state;
-  memcpy(&msgOut.data[3], "nfc", 3);
-  msgOut.data[6] = uidLen;
-  memcpy(&msgOut.data[7], uid, uidLen);
+  memcpy(&msgOut.data[3], uid, uidLen);
+  msgOut.data[3 + uidLen] = 0; /* trailer byte, excluded from hash by length-4 */
   return (int8_t)rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
 }
 #endif
