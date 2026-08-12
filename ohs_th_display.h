@@ -145,8 +145,18 @@ static void dispRender(authMode_t mode) {
 
     case MODE_UNINITIALIZED:
     default:
-      ssd1309PrintBig(3, "CONNECTING");
-      dispClearPages(5, 7);
+      if (initErrorFlags & INIT_ERROR_FP) {
+        ssd1309PrintBig(3, "FP error!");
+        ssd1309Print(5, "  Sensor missing");
+        dispClearPages(6, 7);
+      } else if (initErrorFlags & INIT_ERROR_NFC) {
+        ssd1309PrintBig(3, "NFC error!");
+        ssd1309Print(5, "  Sensor missing");
+        dispClearPages(6, 7);
+      } else {
+        ssd1309PrintBig(3, "CONNECTING");
+        dispClearPages(5, 7);
+      }
       break;
   }
 }
@@ -173,11 +183,12 @@ static THD_FUNCTION(DisplayThread, arg) {
   ssd1309Print(2, "");
   ssd1309PrintBig(3, "CONNECTING");
 
-  authMode_t lastMode    = MODE_UNINITIALIZED;
-  uint8_t    lastSecs    = 0;
-  uint8_t    lastStep    = 0xFF;
-  uint8_t    tickCount   = 0;
-  uint8_t    headerTick  = 0;
+  authMode_t lastMode       = MODE_UNINITIALIZED;
+  uint8_t    lastSecs       = 0;
+  uint8_t    lastStep       = 0xFF;
+  uint8_t    lastErrorFlags = 0;
+  uint8_t    tickCount      = 0;
+  uint8_t    headerTick     = 0;
 
   while (true) {
     chThdSleepMilliseconds(250);
@@ -204,20 +215,22 @@ static THD_FUNCTION(DisplayThread, arg) {
 
     headerTick++;
 
-    bool modeChanged = (mode != lastMode);
-    bool stepChanged = (mode == MODE_ENROLLMENT) && (dispEnrollStep != lastStep);
+    bool modeChanged  = (mode != lastMode);
+    bool stepChanged  = (mode == MODE_ENROLLMENT) && (dispEnrollStep != lastStep);
+    bool errorChanged = (initErrorFlags != lastErrorFlags);
     bool countdownTicked = (dispCountdownSecs != lastSecs) &&
                            (mode == MODE_ARMING ||
                             mode == MODE_AUTH_1 || mode == MODE_AUTH_2 || mode == MODE_AUTH_3);
     bool headerChanged = (headerTick >= 8); // ~2s (also drives disconnect blink rate)
 
-    if (modeChanged || stepChanged) {
+    if (modeChanged || stepChanged || errorChanged) {
       if (mode != NODE_ARM_REJECTED) dispZoneName[0] = '\0';
       dispRender(mode);
-      lastMode = mode;
-      lastSecs = dispCountdownSecs;
-      lastStep = dispEnrollStep;
-      headerTick = 0;
+      lastMode       = mode;
+      lastSecs       = dispCountdownSecs;
+      lastStep       = dispEnrollStep;
+      lastErrorFlags = initErrorFlags;
+      headerTick     = 0;
     } else if (countdownTicked) {
       dispHeader(connected);
       char sub[22];

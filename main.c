@@ -12,6 +12,7 @@
 #define HAS_FINGERPRINT
 #define HAS_SERIAL1 // Console UART
 //#define HAS_NFC    // Enable via UDEFS: -DHAS_NFC (requires PN532 on I2C1, IRQ on PB5)
+//#define HAS_USB_SERIAL // Enable via UDEFS: -DHAS_USB_SERIAL (CDC ACM on PA11/PA12, pullup PB7)
 
 // Sanity checks
 #if defined(HAS_RADIO) && defined(HAS_RS485)
@@ -62,12 +63,36 @@
 #include "chprintf.h"
 #include "board.h"
 
-// Define debug console
+// UART console
 #ifdef HAS_SERIAL1
 BaseSequentialStream *console = (BaseSequentialStream*) &SD1;
-#define DBG(...) {chprintf(console, __VA_ARGS__);}
+#endif
+
+// USB CDC console — non-blocking write (50ms timeout prevents deadlock)
+#ifdef HAS_USB_SERIAL
+#include "usbcfg.h"
+static void udbg_write(const char *fmt, ...) {
+  if (SDU1.config == NULL || SDU1.config->usbp->state != USB_ACTIVE) return;
+  char buf[128];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = chvsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (n > 0)
+    chnWriteTimeout((BaseChannel *)&SDU1, (const uint8_t *)buf,
+                    (size_t)n, TIME_MS2I(50));
+}
+#endif
+
+// DBG: mirrors to UART and/or USB CDC depending on enabled features
+#if defined(HAS_SERIAL1) && defined(HAS_USB_SERIAL)
+  #define DBG(...) { chprintf(console, __VA_ARGS__); udbg_write(__VA_ARGS__); }
+#elif defined(HAS_SERIAL1)
+  #define DBG(...) { chprintf(console, __VA_ARGS__); }
+#elif defined(HAS_USB_SERIAL)
+  #define DBG(...) { udbg_write(__VA_ARGS__); }
 #else
-#define DBG(...)
+  #define DBG(...)
 #endif
 
 binary_semaphore_t R503Sem;
@@ -125,6 +150,11 @@ static msg_t rtttlMailboxBuffer[5]; // Storage for one message (pointer)
 #endif
 #ifdef HAS_DISPLAY
 #include "ohs_ssd1309.h"
+#else
+/* lastGwContact and GW_TIMEOUT_TICKS are declared in ohs_ssd1309.h when
+ * HAS_DISPLAY is set; provide them here for builds without a display. */
+static systime_t lastGwContact = 0;
+#define GW_TIMEOUT_TICKS TIME_S2I(120)
 #endif
 #include "rle.h"
 #include "reg_defaults.h"
@@ -133,9 +163,42 @@ static msg_t rtttlMailboxBuffer[5]; // Storage for one message (pointer)
 #include "tone.h"
 #include "date_time.h"
 
+// Sensor init error flags — set during blocking init loops, read by display thread
+#define INIT_ERROR_FP  (1U << 0)
+#define INIT_ERROR_NFC (1U << 1)
+volatile uint8_t initErrorFlags = 0;
+
 // Global variables
 authMode_t currentMode = MODE_UNINITIALIZED;
 uint8_t resp;
+
+// USB command thread — reads lines from CDC, acts on known commands
+#ifdef HAS_USB_SERIAL
+static THD_WORKING_AREA(waUsbCmdThread, 256);
+static THD_FUNCTION(UsbCmdThread, arg) {
+  (void)arg;
+  chRegSetThreadName("usbcmd");
+  char line[16];
+  uint8_t idx = 0;
+  while (true) {
+    msg_t c = chnGetTimeout((BaseChannel *)&SDU1, TIME_MS2I(100));
+    if (c < 0) { idx = 0; continue; }
+    char ch = (char)c;
+    if (ch == '\r') continue;
+    if (ch == '\n' || idx >= (uint8_t)(sizeof(line) - 1)) {
+      line[idx] = '\0';
+      if (strcmp(line, "reboot") == 0) {
+        udbg_write("Rebooting...\r\n");
+        chThdSleepMilliseconds(100);
+        NVIC_SystemReset();
+      }
+      idx = 0;
+    } else {
+      line[idx++] = ch;
+    }
+  }
+}
+#endif
 
 // Thread handling
 #ifdef HAS_RADIO
@@ -180,6 +243,11 @@ int main(void) {
   
   // LED
   palSetPadMode(GPIOC, GPIOC_LED, PAL_MODE_OUTPUT_PUSHPULL);
+#ifdef HAS_USB_SERIAL
+  // USB D+ pullup on PB7 — hold low (disconnected) until usbStart is called
+  palSetPadMode(GPIOB, GPIOB_USB_PULLUP, PAL_MODE_OUTPUT_PUSHPULL);
+  palClearPad(GPIOB, GPIOB_USB_PULLUP);
+#endif
 
 #ifdef HAS_RADIO
   palSetPadMode(GPIOA, GPIOA_RADIO_INT, PAL_MODE_INPUT);
@@ -295,6 +363,14 @@ int main(void) {
 #ifdef HAS_FINGERPRINT
   R503Init(&SD2, 0xFFFFFFFF, 0);
 #endif
+#ifdef HAS_USB_SERIAL
+  // PB7 has been held low since startup, giving the host enough time to
+  // register a disconnect before we re-enumerate (no explicit sleep needed).
+  sduObjectInit(&SDU1);
+  sduStart(&SDU1, &serusbcfg);
+  usbStart(serusbcfg.usbp, &usbcfg);
+  usbConnectBus(serusbcfg.usbp);
+#endif
 
   // mailboxes
   chMBObjectInit(&rtttlMailbox, rtttlMailboxBuffer, 5);
@@ -321,21 +397,26 @@ int main(void) {
 #ifdef HAS_DISPLAY
   chThdCreateStatic(waDisplayThread, sizeof(waDisplayThread), LOWPRIO, DisplayThread, NULL);
 #endif
+#ifdef HAS_USB_SERIAL
+  chThdCreateStatic(waUsbCmdThread, sizeof(waUsbCmdThread), LOWPRIO, UsbCmdThread, NULL);
+#endif
 
   // Initialize tone generation
   toneInit();
   // Initialize fingerprint sensor
   while (R503Start() != R503_OK) {
-#ifdef HAS_SERIAL1
+    initErrorFlags |= INIT_ERROR_FP;
     DBG("FP Init error!\r\n");
-#endif
     chThdSleepMilliseconds(2000);
   }
+  initErrorFlags &= ~INIT_ERROR_FP;
 #ifdef HAS_NFC
   while (pn532Init(&I2CD1) != PN532_OK) {
+    initErrorFlags |= INIT_ERROR_NFC;
     DBG("NFC Init error!\r\n");
     chThdSleepMilliseconds(2000);
   }
+  initErrorFlags &= ~INIT_ERROR_NFC;
   DBG("NFC OK\r\n");
 #endif
 
