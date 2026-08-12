@@ -431,6 +431,11 @@ int main(void) {
   uint32_t lastBeepSec = 0; // RTC second when synchronized beep last fired
   fingerCount = 0;
   fingerPassed = 0;
+  uint8_t fpErrCount = 0;    // consecutive R503 communication errors
+#ifdef HAS_NFC
+  uint8_t nfcErrCount = 0;   // consecutive PN532 communication errors
+  uint16_t nfcHealthTick = 0;
+#endif
   // Main loop
   while (true) {
     chThdSleepMilliseconds(200);
@@ -464,46 +469,59 @@ int main(void) {
       count--;
     } else if (count == 0) {
       // Set LED and song according to mode
+      uint8_t ledRet = 0xFF; /* 0xFF = LED call not issued for this mode */
       chBSemWait(&R503Sem);
       switch (nodeState.mode) {
         case MODE_ALARM:
-          R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 4);
+          ledRet = R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 4);
           break;
         case MODE_AUTH_1:
-          R503SetAuraLED(aLEDModeFlash, aLEDRed, 100, 1);
+          ledRet = R503SetAuraLED(aLEDModeFlash, aLEDRed, 100, 1);
           break;
         case MODE_AUTH_2:
-          R503SetAuraLED(aLEDModeFlash, aLEDRed, 150, 1);
+          ledRet = R503SetAuraLED(aLEDModeFlash, aLEDRed, 150, 1);
           break;
         case MODE_AUTH_3:
-          R503SetAuraLED(aLEDModeFlash, aLEDRed, 200, 1);
+          ledRet = R503SetAuraLED(aLEDModeFlash, aLEDRed, 200, 1);
           break;
         case MODE_ARMING:
-          R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 1);
+          ledRet = R503SetAuraLED(aLEDModeBreathing, aLEDBlue, 50, 1);
           break;
         case MODE_ARMED_AWAY:
-          R503SetAuraLED(aLEDModeBreathing, aLEDRed, 150, 0); // medium breathing red (infinite)
+          ledRet = R503SetAuraLED(aLEDModeBreathing, aLEDRed, 150, 0);
           break;
         case MODE_DISARMED: {
-          // Solid white if connected, blink white if gateway not responding
           bool gwOk = (lastGwContact != 0) &&
                       (chTimeDiffX(lastGwContact, chVTGetSystemTimeX()) < GW_TIMEOUT_TICKS);
-          if (gwOk)
-            R503SetAuraLED(aLEDModeON, aLEDWhite, 255, 0);   // permanent white
-          else
-            R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0); // blink white = no contact
+          ledRet = gwOk ? R503SetAuraLED(aLEDModeON, aLEDWhite, 255, 0)
+                        : R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0);
           break;
         }
         case MODE_ARMED_HOME:
-          R503SetAuraLED(aLEDModeBreathing, aLEDPurple, 50, 0); // slow breathing purple (infinite)
+          ledRet = R503SetAuraLED(aLEDModeBreathing, aLEDPurple, 50, 0);
           break;
         case MODE_UNINITIALIZED:
-          R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0); // medium blink white (not connected)
+          ledRet = R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0);
           break;
         default:
           break;
       }
       chBSemSignal(&R503Sem);
+      /* Runtime FP health: UART errors from LED calls reveal sensor disconnect */
+      if (ledRet != 0xFF) {
+        if (ledRet == R503_OK) {
+          fpErrCount = 0;
+          if (initErrorFlags & INIT_ERROR_FP) {
+            initErrorFlags &= ~INIT_ERROR_FP;
+            DBG("FP sensor recovered\r\n");
+          }
+        } else {
+          if (++fpErrCount >= 3 && !(initErrorFlags & INIT_ERROR_FP)) {
+            initErrorFlags |= INIT_ERROR_FP;
+            DBG("FP sensor fail! err=%u\r\n", ledRet);
+          }
+        }
+      }
       count--;
     } else {
       // Reset count
@@ -512,6 +530,25 @@ int main(void) {
 
     // Check if authentication is allowed
     if (!isAuthAllowed()) {
+#ifdef HAS_NFC
+      /* Periodic NFC health check — I2C times out fast (~100ms) on disconnect */
+      nfcHealthTick++;
+      if (nfcHealthTick >= 150) { /* ~30s at 200ms per loop */
+        nfcHealthTick = 0;
+        if (pn532Init(&I2CD1) != PN532_OK) {
+          if (++nfcErrCount >= 3 && !(initErrorFlags & INIT_ERROR_NFC)) {
+            initErrorFlags |= INIT_ERROR_NFC;
+            DBG("NFC sensor fail!\r\n");
+          }
+        } else {
+          nfcErrCount = 0;
+          if (initErrorFlags & INIT_ERROR_NFC) {
+            initErrorFlags &= ~INIT_ERROR_NFC;
+            DBG("NFC sensor recovered\r\n");
+          }
+        }
+      }
+#endif
       continue;
     }
 
@@ -521,6 +558,14 @@ int main(void) {
     // Read fingerprint — hold R503Sem to prevent concurrent access from RS485 thread
     chBSemWait(&R503Sem);
     resp = R503TakeImage();
+    /* Clear FP error immediately on any valid sensor response */
+    if (resp == R503_OK || resp == R503_NO_FINGER) {
+      fpErrCount = 0;
+      if (initErrorFlags & INIT_ERROR_FP) {
+        initErrorFlags &= ~INIT_ERROR_FP;
+        DBG("FP sensor recovered\r\n");
+      }
+    }
     if ((resp == R503_OK) && (fingerPassed >= 0)) {
       resp = R503ExtractFeatures(FINGERPRINT_CHAR_BUFFER);
       if (resp != R503_OK) {
@@ -544,14 +589,24 @@ int main(void) {
 #ifdef HAS_NFC
     {
       uint8_t nfcUid[7]; uint8_t nfcLen = 0;
-      bool nfcGotCard = (pn532StartDetect(&I2CD1) == PN532_OK) &&
-                        (chBSemWaitTimeout(&NFCSem, TIME_MS2I(300)) == MSG_OK) &&
-                        (pn532ReadUID(&I2CD1, nfcUid, &nfcLen) == PN532_OK);
-
-      if (nfcGotCard) {
-        DBG("NFC: card UID len=%u\r\n", nfcLen);
-        sendNFCCard(0, 0, nfcUid, nfcLen);
-        chThdSleepMilliseconds(500); /* debounce — prevent duplicate sends */
+      if (pn532StartDetect(&I2CD1) != PN532_OK) {
+        if (++nfcErrCount >= 3 && !(initErrorFlags & INIT_ERROR_NFC)) {
+          initErrorFlags |= INIT_ERROR_NFC;
+          DBG("NFC sensor fail!\r\n");
+        }
+      } else {
+        nfcErrCount = 0;
+        if (initErrorFlags & INIT_ERROR_NFC) {
+          initErrorFlags &= ~INIT_ERROR_NFC;
+          DBG("NFC sensor recovered\r\n");
+        }
+        bool nfcGotCard = (chBSemWaitTimeout(&NFCSem, TIME_MS2I(300)) == MSG_OK) &&
+                          (pn532ReadUID(&I2CD1, nfcUid, &nfcLen) == PN532_OK);
+        if (nfcGotCard) {
+          DBG("NFC: card UID len=%u\r\n", nfcLen);
+          sendNFCCard(0, 0, nfcUid, nfcLen);
+          chThdSleepMilliseconds(500); /* debounce — prevent duplicate sends */
+        }
       }
     }
 #endif

@@ -75,8 +75,18 @@ static void dispRender(authMode_t mode) {
 
   switch (mode) {
     case MODE_DISARMED:
-      ssd1309PrintBig(3, "OHS Ready");
-      dispClearPages(5, 7);
+      if (initErrorFlags & INIT_ERROR_FP) {
+        ssd1309PrintBig(3, "FP error!");
+        ssd1309Print(5, "  Check sensor");
+        dispClearPages(6, 7);
+      } else if (initErrorFlags & INIT_ERROR_NFC) {
+        ssd1309PrintBig(3, "NFC error!");
+        ssd1309Print(5, "  Check sensor");
+        dispClearPages(6, 7);
+      } else {
+        ssd1309PrintBig(3, "OHS Ready");
+        dispClearPages(5, 7);
+      }
       break;
 
     case MODE_ARMED_AWAY:
