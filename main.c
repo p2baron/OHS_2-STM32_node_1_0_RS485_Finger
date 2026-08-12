@@ -507,13 +507,20 @@ int main(void) {
           break;
       }
       chBSemSignal(&R503Sem);
-      /* Runtime FP health: UART errors from LED calls reveal sensor disconnect */
+      /* Runtime FP health: UART errors from LED calls reveal sensor disconnect.
+       * R503_TIMEOUT (0xE9) after a 10s wait is definitive — flag immediately.
+       * Other transient errors need 3 consecutive failures. */
       if (ledRet != 0xFF) {
         if (ledRet == R503_OK) {
           fpErrCount = 0;
           if (initErrorFlags & INIT_ERROR_FP) {
             initErrorFlags &= ~INIT_ERROR_FP;
             DBG("FP sensor recovered\r\n");
+          }
+        } else if (ledRet == R503_TIMEOUT || ledRet == R503_ERROR_RECEIVING_PACKET) {
+          if (!(initErrorFlags & INIT_ERROR_FP)) {
+            initErrorFlags |= INIT_ERROR_FP;
+            DBG("FP sensor disconnected! err=%u\r\n", ledRet);
           }
         } else {
           if (++fpErrCount >= 3 && !(initErrorFlags & INIT_ERROR_FP)) {
