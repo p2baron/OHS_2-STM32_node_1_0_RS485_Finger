@@ -565,12 +565,18 @@ int main(void) {
     // Read fingerprint — hold R503Sem to prevent concurrent access from RS485 thread
     chBSemWait(&R503Sem);
     resp = R503TakeImage();
-    /* Clear FP error immediately on any valid sensor response */
     if (resp == R503_OK || resp == R503_NO_FINGER) {
       fpErrCount = 0;
       if (initErrorFlags & INIT_ERROR_FP) {
         initErrorFlags &= ~INIT_ERROR_FP;
         DBG("FP sensor recovered\r\n");
+      }
+    } else {
+      /* Any non-OK scan error is a potential disconnect — flag after 3 */
+      if (++fpErrCount == 1) DBG("FP scan err=%u\r\n", resp);
+      if (fpErrCount >= 3 && !(initErrorFlags & INIT_ERROR_FP)) {
+        initErrorFlags |= INIT_ERROR_FP;
+        DBG("FP sensor fail!\r\n");
       }
     }
     if ((resp == R503_OK) && (fingerPassed >= 0)) {
