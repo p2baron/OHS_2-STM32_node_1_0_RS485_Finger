@@ -124,7 +124,6 @@ LDSCRIPT= $(STARTUPLD)/STM32F103xB.ld
 CSRC = $(ALLCSRC) \
        $(TESTSRC) \
        syscalls_minimal.c \
-       usbcfg.c \
        main.c
 #$(CHIBIOS)/os/various/syscalls.c \       
 

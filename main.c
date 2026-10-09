@@ -12,7 +12,6 @@
 #define HAS_FINGERPRINT
 #define HAS_SERIAL1 // Console UART
 //#define HAS_NFC    // Enable via UDEFS: -DHAS_NFC (requires PN532 on I2C1, IRQ on PB5)
-//#define HAS_USB_SERIAL // Enable via UDEFS: -DHAS_USB_SERIAL (CDC ACM on PA11/PA12, pullup PB7)
 
 // Sanity checks
 #if defined(HAS_RADIO) && defined(HAS_RS485)
@@ -68,29 +67,8 @@
 BaseSequentialStream *console = (BaseSequentialStream*) &SD1;
 #endif
 
-// USB CDC console — non-blocking write (50ms timeout prevents deadlock)
-#ifdef HAS_USB_SERIAL
-#include "usbcfg.h"
-static void udbg_write(const char *fmt, ...) {
-  if (SDU1.config == NULL || SDU1.config->usbp->state != USB_ACTIVE) return;
-  char buf[128];
-  va_list ap;
-  va_start(ap, fmt);
-  int n = chvsnprintf(buf, sizeof(buf), fmt, ap);
-  va_end(ap);
-  if (n > 0)
-    chnWriteTimeout((BaseChannel *)&SDU1, (const uint8_t *)buf,
-                    (size_t)n, TIME_MS2I(50));
-}
-#endif
-
-// DBG: mirrors to UART and/or USB CDC depending on enabled features
-#if defined(HAS_SERIAL1) && defined(HAS_USB_SERIAL)
-  #define DBG(...) { chprintf(console, __VA_ARGS__); udbg_write(__VA_ARGS__); }
-#elif defined(HAS_SERIAL1)
+#ifdef HAS_SERIAL1
   #define DBG(...) { chprintf(console, __VA_ARGS__); }
-#elif defined(HAS_USB_SERIAL)
-  #define DBG(...) { udbg_write(__VA_ARGS__); }
 #else
   #define DBG(...)
 #endif
@@ -172,34 +150,6 @@ volatile uint8_t initErrorFlags = 0;
 authMode_t currentMode = MODE_UNINITIALIZED;
 uint8_t resp;
 
-// USB command thread — reads lines from CDC, acts on known commands
-#ifdef HAS_USB_SERIAL
-static THD_WORKING_AREA(waUsbCmdThread, 256);
-static THD_FUNCTION(UsbCmdThread, arg) {
-  (void)arg;
-  chRegSetThreadName("usbcmd");
-  char line[16];
-  uint8_t idx = 0;
-  while (true) {
-    msg_t c = chnGetTimeout((BaseChannel *)&SDU1, TIME_MS2I(100));
-    if (c < 0) { idx = 0; continue; }
-    char ch = (char)c;
-    if (ch == '\r') continue;
-    if (ch == '\n' || idx >= (uint8_t)(sizeof(line) - 1)) {
-      line[idx] = '\0';
-      if (strcmp(line, "reboot") == 0) {
-        udbg_write("Rebooting...\r\n");
-        chThdSleepMilliseconds(100);
-        NVIC_SystemReset();
-      }
-      idx = 0;
-    } else {
-      line[idx++] = ch;
-    }
-  }
-}
-#endif
-
 // Thread handling
 #ifdef HAS_RADIO
 #include "ohs_th_radio.h"
@@ -243,11 +193,6 @@ int main(void) {
   
   // LED
   palSetPadMode(GPIOC, GPIOC_LED, PAL_MODE_OUTPUT_PUSHPULL);
-#ifdef HAS_USB_SERIAL
-  // USB D+ pullup on PB7 — hold low (disconnected) until usbStart is called
-  palSetPadMode(GPIOB, GPIOB_USB_PULLUP, PAL_MODE_OUTPUT_PUSHPULL);
-  palClearPad(GPIOB, GPIOB_USB_PULLUP);
-#endif
 
 #ifdef HAS_RADIO
   palSetPadMode(GPIOA, GPIOA_RADIO_INT, PAL_MODE_INPUT);
@@ -349,6 +294,20 @@ int main(void) {
        * entirely so only the external pull-ups govern their level. */
       palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_INPUT);
       palSetPadMode(GPIOB, GPIOB_SDA1, PAL_MODE_INPUT);
+    } else {
+      /* ohs_ssd1309.h drives I2C1 by polling CR1/DR/SR1/SR2 directly
+       * instead of through ChibiOS's i2cMasterTransmitTimeout(), which
+       * hangs on this board. i2cStart() leaves I2C1's error interrupt
+       * (ITERREN) permanently enabled at the NVIC; a NACK or other
+       * hardware error flag set by our raw transfers still fires the
+       * driver's ISR, which resumes a thread reference the driver never
+       * armed (no driver-level transfer is in flight) — that mismatch
+       * was causing sporadic resets. Disable both I2C1 vectors since
+       * nothing here needs event/error interrupts. NOTE: revisit this if
+       * HAS_NFC is ever built alongside HAS_DISPLAY — ohs_nfc_pn532.h
+       * still drives I2C1 via the normal interrupt-driven driver calls. */
+      nvicDisableVector(I2C1_EV_IRQn);
+      nvicDisableVector(I2C1_ER_IRQn);
     }
   }
 #endif
@@ -362,14 +321,6 @@ int main(void) {
 #endif
 #ifdef HAS_FINGERPRINT
   R503Init(&SD2, 0xFFFFFFFF, 0);
-#endif
-#ifdef HAS_USB_SERIAL
-  // PB7 has been held low since startup, giving the host enough time to
-  // register a disconnect before we re-enumerate (no explicit sleep needed).
-  sduObjectInit(&SDU1);
-  sduStart(&SDU1, &serusbcfg);
-  usbStart(serusbcfg.usbp, &usbcfg);
-  usbConnectBus(serusbcfg.usbp);
 #endif
 
   // mailboxes
@@ -396,9 +347,6 @@ int main(void) {
   chThdCreateStatic(waRTTTLThread, sizeof(waRTTTLThread), NORMALPRIO, RTTTLThread, (void*) "rtttl");
 #ifdef HAS_DISPLAY
   chThdCreateStatic(waDisplayThread, sizeof(waDisplayThread), LOWPRIO, DisplayThread, NULL);
-#endif
-#ifdef HAS_USB_SERIAL
-  chThdCreateStatic(waUsbCmdThread, sizeof(waUsbCmdThread), LOWPRIO, UsbCmdThread, NULL);
 #endif
 
   // Initialize tone generation

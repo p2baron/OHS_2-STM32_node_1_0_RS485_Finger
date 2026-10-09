@@ -174,13 +174,23 @@ static void dispRender(authMode_t mode) {
 /* -------------------------------------------------------------------------
  * Display thread
  * ------------------------------------------------------------------------- */
-static THD_WORKING_AREA(waDisplayThread, 384);
+/* Bumped from 384: that was marginal once DBG() calls landed at deeper
+ * nesting in the update loop (chprintf + the call chain through dispRender/
+ * dispHeader/ssd1309*) — intermittent crashes traced back to this thread's
+ * stack running out. 20KB of SRAM is available; this is cheap insurance. */
+static THD_WORKING_AREA(waDisplayThread, 768);
 static THD_FUNCTION(DisplayThread, arg) {
   (void)arg;
   chRegSetThreadName("display");
 
-  /* Run display probe + init here at LOWPRIO so it doesn't block main thread */
-  ssd1309Init();
+  /* Run display probe + init here at LOWPRIO so it doesn't block main thread.
+   * Some OLED modules are still completing their own power-on sequence by the
+   * time this thread runs and NACK the first probe, so retry a few times
+   * with a short delay rather than giving up on a single failed attempt. */
+  for (uint8_t attempt = 0; attempt < 5 && !dispPresent; attempt++) {
+    if (attempt) chThdSleepMilliseconds(100);
+    ssd1309Init();
+  }
 
   if (!dispPresent) {
     chThdExit(MSG_OK);

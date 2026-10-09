@@ -147,9 +147,46 @@ static const uint8_t ssd1309Expand[16] = {
  * Low-level helpers
  * ------------------------------------------------------------------------- */
 
+/* Raw register-level I2C write, bypassing ChibiOS's DMA-backed
+ * i2cMasterTransmitTimeout(): that call hangs indefinitely on this board's
+ * STM32F103 I2Cv1 LLD (confirmed via SWD — the same transactions complete
+ * instantly when driven directly through CR1/DR/SR1/SR2), while the
+ * interrupt/DMA-driven path never completes. Polling-based, so it blocks
+ * the calling thread for the duration of the transfer instead of yielding. */
+static bool _i2cRawTx(uint8_t addr7, const uint8_t *data, uint8_t len) {
+  uint32_t guard;
+
+  I2C1->CR1 |= I2C_CR1_START;
+  guard = 100000;
+  while (!(I2C1->SR1 & I2C_SR1_SB) && --guard) ;
+  if (!guard) { DBG("_i2cRawTx: SB timeout, SR1=%04X SR2=%04X\r\n", (unsigned)I2C1->SR1, (unsigned)I2C1->SR2); I2C1->CR1 |= I2C_CR1_STOP; return false; }
+
+  I2C1->DR = (uint8_t)(addr7 << 1);
+  guard = 100000;
+  while (!(I2C1->SR1 & (I2C_SR1_ADDR | I2C_SR1_AF)) && --guard) ;
+  if (!guard || (I2C1->SR1 & I2C_SR1_AF)) {
+    DBG("_i2cRawTx: addr 0x%02X fail, guard=%lu SR1=%04X\r\n", addr7, (unsigned long)guard, (unsigned)I2C1->SR1);
+    I2C1->SR1 &= ~I2C_SR1_AF;
+    I2C1->CR1 |= I2C_CR1_STOP;
+    return false;
+  }
+  (void)I2C1->SR2; // reading SR2 after SR1/ADDR clears the ADDR flag
+
+  for (uint8_t i = 0; i < len; i++) {
+    guard = 100000;
+    while (!(I2C1->SR1 & I2C_SR1_TXE) && --guard) ;
+    if (!guard) { DBG("_i2cRawTx: TXE timeout at byte %d/%d, SR1=%04X\r\n", (int)i, (int)len, (unsigned)I2C1->SR1); I2C1->CR1 |= I2C_CR1_STOP; return false; }
+    I2C1->DR = data[i];
+  }
+  guard = 100000;
+  while (!(I2C1->SR1 & I2C_SR1_BTF) && --guard) ;
+  I2C1->CR1 |= I2C_CR1_STOP;
+  return true;
+}
+
 static void _ssd1309TxCmd(const uint8_t *cmds, uint8_t len) {
   i2cAcquireBus(&I2CD1);
-  i2cMasterTransmitTimeout(&I2CD1, dispAddr, cmds, len, NULL, 0, TIME_MS2I(10));
+  _i2cRawTx(dispAddr, cmds, len);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -209,9 +246,9 @@ static void ssd1309Init(void) {
   DBG("SSD1309: probing...\r\n");
   for (uint8_t ai = 0; ai < 2; ai++) {
     i2cAcquireBus(&I2CD1);
-    msg_t r = i2cMasterTransmitTimeout(&I2CD1, addrs[ai], probe, 1, NULL, 0, TIME_MS2I(10));
+    bool ok = _i2cRawTx(addrs[ai], probe, 1);
     i2cReleaseBus(&I2CD1);
-    if (r == MSG_OK) {
+    if (ok) {
       DBG("SSD1309: ACK at 0x%02X\r\n", addrs[ai]);
       dispAddr    = addrs[ai];
       dispPresent = true;
@@ -237,7 +274,7 @@ static void ssd1309Clear(void) {
   for (uint8_t page = 0; page < 8; page++) {
     _ssd1309SetPos(page, 0);
     i2cAcquireBus(&I2CD1);
-    i2cMasterTransmitTimeout(&I2CD1, dispAddr, buf, 129, NULL, 0, TIME_MS2I(100));
+    _i2cRawTx(dispAddr, buf, 129);
     i2cReleaseBus(&I2CD1);
   }
 }
@@ -266,7 +303,7 @@ static void ssd1309Print(uint8_t page, const char *s) {
   memset(&txBuf[1 + col], 0x00, 126 - col); // pad to end of line
   _ssd1309SetPos(page, 0);
   i2cAcquireBus(&I2CD1);
-  i2cMasterTransmitTimeout(&I2CD1, dispAddr, txBuf, 127, NULL, 0, TIME_MS2I(50));
+  _i2cRawTx(dispAddr, txBuf, 127);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -281,7 +318,7 @@ static void ssd1309Hline(uint8_t page) {
   memset(&buf[1], 0x01, 128); // single pixel row at top of page
   _ssd1309SetPos(page, 0);
   i2cAcquireBus(&I2CD1);
-  i2cMasterTransmitTimeout(&I2CD1, dispAddr, buf, 129, NULL, 0, TIME_MS2I(100));
+  _i2cRawTx(dispAddr, buf, 129);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -323,11 +360,11 @@ static void ssd1309PrintBig(uint8_t page, const char *s) {
 
   _ssd1309SetPos(page,     0);
   i2cAcquireBus(&I2CD1);
-  i2cMasterTransmitTimeout(&I2CD1, dispAddr, topBuf, 121, NULL, 0, TIME_MS2I(50));
+  _i2cRawTx(dispAddr, topBuf, 121);
   i2cReleaseBus(&I2CD1);
   _ssd1309SetPos(page + 1, 0);
   i2cAcquireBus(&I2CD1);
-  i2cMasterTransmitTimeout(&I2CD1, dispAddr, botBuf, 121, NULL, 0, TIME_MS2I(50));
+  _i2cRawTx(dispAddr, botBuf, 121);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -361,7 +398,7 @@ static void ssd1309Bar(uint8_t page, uint8_t percent) {
       n++; px++;
     }
     i2cAcquireBus(&I2CD1);
-    i2cMasterTransmitTimeout(&I2CD1, dispAddr, buf, n + 1, NULL, 0, TIME_MS2I(10));
+    _i2cRawTx(dispAddr, buf, n + 1);
     i2cReleaseBus(&I2CD1);
   }
 }
