@@ -153,18 +153,21 @@ static const uint8_t ssd1309Expand[16] = {
  * instantly when driven directly through CR1/DR/SR1/SR2), while the
  * interrupt/DMA-driven path never completes. Polling-based, so it blocks
  * the calling thread for the duration of the transfer instead of yielding. */
+volatile uint32_t i2cRawTxFailCount = 0; // diagnostic: non-zero means _i2cRawTx has failed at least once since boot
+
 static bool _i2cRawTx(uint8_t addr7, const uint8_t *data, uint8_t len) {
   uint32_t guard;
 
   I2C1->CR1 |= I2C_CR1_START;
   guard = 100000;
   while (!(I2C1->SR1 & I2C_SR1_SB) && --guard) ;
-  if (!guard) { DBG("_i2cRawTx: SB timeout, SR1=%04X SR2=%04X\r\n", (unsigned)I2C1->SR1, (unsigned)I2C1->SR2); I2C1->CR1 |= I2C_CR1_STOP; return false; }
+  if (!guard) { i2cRawTxFailCount++; DBG("_i2cRawTx: SB timeout, SR1=%04X SR2=%04X\r\n", (unsigned)I2C1->SR1, (unsigned)I2C1->SR2); I2C1->CR1 |= I2C_CR1_STOP; return false; }
 
   I2C1->DR = (uint8_t)(addr7 << 1);
   guard = 100000;
   while (!(I2C1->SR1 & (I2C_SR1_ADDR | I2C_SR1_AF)) && --guard) ;
   if (!guard || (I2C1->SR1 & I2C_SR1_AF)) {
+    i2cRawTxFailCount++;
     DBG("_i2cRawTx: addr 0x%02X fail, guard=%lu SR1=%04X\r\n", addr7, (unsigned long)guard, (unsigned)I2C1->SR1);
     I2C1->SR1 &= ~I2C_SR1_AF;
     I2C1->CR1 |= I2C_CR1_STOP;
@@ -175,7 +178,7 @@ static bool _i2cRawTx(uint8_t addr7, const uint8_t *data, uint8_t len) {
   for (uint8_t i = 0; i < len; i++) {
     guard = 100000;
     while (!(I2C1->SR1 & I2C_SR1_TXE) && --guard) ;
-    if (!guard) { DBG("_i2cRawTx: TXE timeout at byte %d/%d, SR1=%04X\r\n", (int)i, (int)len, (unsigned)I2C1->SR1); I2C1->CR1 |= I2C_CR1_STOP; return false; }
+    if (!guard) { i2cRawTxFailCount++; DBG("_i2cRawTx: TXE timeout at byte %d/%d, SR1=%04X\r\n", (int)i, (int)len, (unsigned)I2C1->SR1); I2C1->CR1 |= I2C_CR1_STOP; return false; }
     I2C1->DR = data[i];
   }
   guard = 100000;
@@ -184,9 +187,23 @@ static bool _i2cRawTx(uint8_t addr7, const uint8_t *data, uint8_t len) {
   return true;
 }
 
+/* Some boards see a much higher transient failure rate on this bus than
+ * others (observed: dozens of failures within seconds on one node, vs
+ * effectively none on another, same firmware) — likely signal-integrity
+ * differences (pull-ups, wiring) rather than anything software can fix
+ * outright. Retry a few times so a frequently-updated page (e.g. the
+ * header, redrawn every ~2s) doesn't get stuck showing stale content
+ * after one failed write with nothing to ever retry it. */
+static bool _i2cRawTxRetry(uint8_t addr7, const uint8_t *data, uint8_t len) {
+  for (uint8_t attempt = 0; attempt < 4; attempt++) {
+    if (_i2cRawTx(addr7, data, len)) return true;
+  }
+  return false;
+}
+
 static void _ssd1309TxCmd(const uint8_t *cmds, uint8_t len) {
   i2cAcquireBus(&I2CD1);
-  _i2cRawTx(dispAddr, cmds, len);
+  _i2cRawTxRetry(dispAddr, cmds, len);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -274,7 +291,7 @@ static void ssd1309Clear(void) {
   for (uint8_t page = 0; page < 8; page++) {
     _ssd1309SetPos(page, 0);
     i2cAcquireBus(&I2CD1);
-    _i2cRawTx(dispAddr, buf, 129);
+    _i2cRawTxRetry(dispAddr, buf, 129);
     i2cReleaseBus(&I2CD1);
   }
 }
@@ -303,7 +320,7 @@ static void ssd1309Print(uint8_t page, const char *s) {
   memset(&txBuf[1 + col], 0x00, 126 - col); // pad to end of line
   _ssd1309SetPos(page, 0);
   i2cAcquireBus(&I2CD1);
-  _i2cRawTx(dispAddr, txBuf, 127);
+  _i2cRawTxRetry(dispAddr, txBuf, 127);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -318,7 +335,7 @@ static void ssd1309Hline(uint8_t page) {
   memset(&buf[1], 0x01, 128); // single pixel row at top of page
   _ssd1309SetPos(page, 0);
   i2cAcquireBus(&I2CD1);
-  _i2cRawTx(dispAddr, buf, 129);
+  _i2cRawTxRetry(dispAddr, buf, 129);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -360,11 +377,11 @@ static void ssd1309PrintBig(uint8_t page, const char *s) {
 
   _ssd1309SetPos(page,     0);
   i2cAcquireBus(&I2CD1);
-  _i2cRawTx(dispAddr, topBuf, 121);
+  _i2cRawTxRetry(dispAddr, topBuf, 121);
   i2cReleaseBus(&I2CD1);
   _ssd1309SetPos(page + 1, 0);
   i2cAcquireBus(&I2CD1);
-  _i2cRawTx(dispAddr, botBuf, 121);
+  _i2cRawTxRetry(dispAddr, botBuf, 121);
   i2cReleaseBus(&I2CD1);
 }
 
@@ -398,7 +415,7 @@ static void ssd1309Bar(uint8_t page, uint8_t percent) {
       n++; px++;
     }
     i2cAcquireBus(&I2CD1);
-    _i2cRawTx(dispAddr, buf, n + 1);
+    _i2cRawTxRetry(dispAddr, buf, n + 1);
     i2cReleaseBus(&I2CD1);
   }
 }
