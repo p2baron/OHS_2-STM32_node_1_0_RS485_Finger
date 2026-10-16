@@ -143,6 +143,16 @@ static void dispClearPages(uint8_t from, uint8_t to) {
 static void dispRender(authMode_t mode) {
   char sub[22];
 
+  // Home-arm's brief MODE_ARMING pass skips its own drawing (see that
+  // case below), but the shared preamble just below runs unconditionally
+  // before the switch even starts — so skipping only the case body still
+  // let the preamble's "clear page 2" wipe the top of whatever was on
+  // screen (e.g. the Disarmed icon), leaving it visibly torn for the gap
+  // until MODE_ARMED_HOME's own render redraws that page a moment later.
+  // Bail out here, before the preamble runs at all, so this pass touches
+  // nothing.
+  if (mode == MODE_ARMING && dispCountdownMax == 0) return;
+
   dispHeader(true);
   ssd1309Hline(1);
   ssd1309Print(2, "");  // blank gap
@@ -158,15 +168,14 @@ static void dispRender(authMode_t mode) {
         ssd1309Print(5, "  Check sensor");
         dispFooter();
       } else {
-        // Icon + "DISARMED" / "OHS READY", icon at cols 4-21 (pages 2-4),
-        // text starting after it at col 26 — see the Disarmed mockup.
-        // DISARMED double-height (16px, the biggest the font supports) so
-        // it reads clearly bigger than the single-height OHS READY below it.
+        // Icon + "OHS READY" only — no "DISARMED" line. Text sits on
+        // page 2, level with the icon's shoulder (its widest point, just
+        // below the apex), icon at cols 4-21 (pages 2-4), text after it
+        // at col 26.
         ssd1309Print(3, "");
         ssd1309Print(4, "");
         ssd1309DrawBitmap(2, 4, iconShieldOk, 18, 3);
-        ssd1309PrintBigAt(2, 26, "DISARMED");
-        ssd1309PrintAt(4, 26, "OHS READY");
+        ssd1309PrintAt(2, 26, "OHS READY");
         ssd1309Print(5, "");
         dispFooter();
       }
@@ -205,6 +214,10 @@ static void dispRender(authMode_t mode) {
       break;
 
     case MODE_ARMING: {
+      // Home-arm's ~2s MODE_ARMING (dispCountdownMax == 0: a protocol
+      // formality, not a real exit delay — the gateway only sends a
+      // nonzero value for away-arm) is handled by the early return at
+      // the top of this function, before the preamble even runs.
       ssd1309PrintBig(3, "ARMING");
       chsnprintf(sub, sizeof(sub), "  Exit: %us", (unsigned)dispCountdownSecs);
       ssd1309Print(5, sub);
