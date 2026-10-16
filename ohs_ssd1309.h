@@ -431,6 +431,25 @@ static void ssd1309DrawBitmap(uint8_t page, uint8_t col, const uint8_t *bmp,
   }
 }
 
+/*
+ * Like ssd1309DrawBitmap(), but complemented — dark strokes on a lit
+ * background instead of lit strokes on dark. Used for icons on the
+ * Triggered screen's inverted (whole-panel-light) layout.
+ */
+static void ssd1309DrawBitmapInverted(uint8_t page, uint8_t col, const uint8_t *bmp,
+                                       uint8_t cols, uint8_t pageSpan) {
+  if (!dispPresent) return;
+  static uint8_t buf[129]; // static: BSS not stack
+  buf[0] = 0x40;
+  for (uint8_t p = 0; p < pageSpan; p++) {
+    for (uint8_t c = 0; c < cols; c++) buf[1 + c] = (uint8_t)~bmp[(uint16_t)p * cols + c];
+    _ssd1309SetPos((uint8_t)(page + p), col);
+    i2cAcquireBus(&I2CD1);
+    _i2cRawTxRetry(dispAddr, buf, (uint8_t)(cols + 1));
+    i2cReleaseBus(&I2CD1);
+  }
+}
+
 /* Small 8x8 "signal / connected" glyph — ascending bars, 1 page tall. */
 static const uint8_t iconSignalSmall[8] = {
   0xC0, 0x00, 0xF0, 0x00, 0xFC, 0x00, 0xFF, 0x00
@@ -463,6 +482,16 @@ static const uint8_t iconLinkBroken[66] = {
   0x00, 0x00, 0x00, 0x38, 0x38, 0x3F, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x18, 0x1C, 0x1E, 0x0F, 0x07, 0x07, 0x07, 0x8F, 0xFE, 0xFC, 0xF8,
   0xC0, 0xE0, 0xF0, 0x78, 0x3C, 0x1E, 0x0F, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x3C, 0x1E, 0x0F, 0x07, 0x03, 0x01, 0x00,
   0x07, 0x0F, 0x1F, 0x3C, 0x38, 0x38, 0x38, 0x3C, 0x1E, 0x0E, 0x06, 0x00, 0x00, 0x00, 0x3F, 0x3F, 0x3F, 0x07, 0x07, 0x00, 0x00, 0x00
+};
+
+/* 20x18 warning-triangle-with-exclamation glyph (triggered-alarm icon),
+ * 3 pages tall (rows 18-23 of the 3rd page unused). Hand-drawn and
+ * rendered as ASCII art to check before committing these bytes — see
+ * the lessons memory. */
+static const uint8_t iconWarning[60] = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0xE0, 0x38, 0xFF, 0xE7, 0x1F, 0x38, 0xE0, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x80, 0xE0, 0x70, 0x1C, 0x0F, 0x03, 0x00, 0x00, 0x67, 0x67, 0x00, 0x00, 0x00, 0x03, 0x0F, 0x1C, 0x70, 0xE0, 0x80,
+  0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03
 };
 
 /*
@@ -574,6 +603,48 @@ static void ssd1309PrintBigAt(uint8_t page, uint8_t col, const char *s) {
     topBuf[1 + n + 1] = 0;
     botBuf[1 + n]     = 0;
     botBuf[1 + n + 1] = 0;
+    n += 2;
+  }
+  if (n == 0) return;
+  _ssd1309SetPos(page, col);
+  i2cAcquireBus(&I2CD1);
+  _i2cRawTxRetry(dispAddr, topBuf, (uint8_t)(n + 1));
+  i2cReleaseBus(&I2CD1);
+  _ssd1309SetPos((uint8_t)(page + 1), col);
+  i2cAcquireBus(&I2CD1);
+  _i2cRawTxRetry(dispAddr, botBuf, (uint8_t)(n + 1));
+  i2cReleaseBus(&I2CD1);
+}
+
+/*
+ * Like ssd1309PrintBigAt(), but complemented — dark text on a lit
+ * background. Used for "ALARM" on the Triggered screen.
+ */
+static void ssd1309PrintBigAtInverted(uint8_t page, uint8_t col, const char *s) {
+  if (!dispPresent) return;
+  static uint8_t topBuf[121];
+  static uint8_t botBuf[121];
+  topBuf[0] = 0x40;
+  botBuf[0] = 0x40;
+  uint8_t n = 0;
+  while (*s && (uint16_t)col + n + 12 <= 128) {
+    uint8_t c = (uint8_t)*s++;
+    if (c < 0x20 || c > 0x7F) c = 0x20;
+    const uint8_t *g = ssd1309Font[c - 0x20];
+    for (uint8_t sc = 0; sc < 5; sc++) {
+      uint8_t src = g[sc];
+      uint8_t top = (uint8_t)~ssd1309Expand[src & 0x0F];
+      uint8_t bot = (uint8_t)~ssd1309Expand[(src >> 4) & 0x0F];
+      topBuf[1 + n]     = top;
+      topBuf[1 + n + 1] = top;
+      botBuf[1 + n]     = bot;
+      botBuf[1 + n + 1] = bot;
+      n += 2;
+    }
+    topBuf[1 + n]     = 0xFF;
+    topBuf[1 + n + 1] = 0xFF;
+    botBuf[1 + n]     = 0xFF;
+    botBuf[1 + n + 1] = 0xFF;
     n += 2;
   }
   if (n == 0) return;

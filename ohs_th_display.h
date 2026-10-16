@@ -226,10 +226,33 @@ static void dispRender(authMode_t mode) {
       break;
     }
 
-    case MODE_ALARM:
-      ssd1309PrintBig(3, "!! ALARM !!");
-      dispClearPages(5, 7);
+    case MODE_ALARM: {
+      // Whole panel inverted (light) except the footer, which stays
+      // normal (dark) — see the Triggered mockup. No separator lines:
+      // each section is one solid color, so the color change is the
+      // only boundary needed.
+      dispHeaderInverted();
+      ssd1309PrintInverted(1, "");
+      ssd1309PrintInverted(2, "");
+      ssd1309PrintInverted(3, "");
+      ssd1309PrintInverted(4, "");
+      ssd1309DrawBitmapInverted(2, 4, iconWarning, 20, 3);
+      ssd1309PrintBigAtInverted(2, 30, "ALARM");
+      if (dispZoneName[0]) {
+        chsnprintf(sub, sizeof(sub), "  %s", dispZoneName);
+        ssd1309PrintInverted(5, sub);
+      } else {
+        ssd1309PrintInverted(5, "");
+      }
+      ssd1309PrintInverted(6, "");
+      char alarmFooterName[NODE_NAME_SIZE + 1];
+      memcpy(alarmFooterName, &conf.reg[5], NODE_NAME_SIZE);
+      alarmFooterName[NODE_NAME_SIZE] = '\0';
+      for (int8_t i = NODE_NAME_SIZE - 1; i >= 0 && alarmFooterName[i] == ' '; i--)
+        alarmFooterName[i] = '\0';
+      ssd1309Print(7, alarmFooterName);
       break;
+    }
 
     case MODE_ENROLLMENT: {
       static const char *enrollMsgs[6] = {
@@ -389,7 +412,10 @@ static THD_FUNCTION(DisplayThread, arg) {
     bool headerChanged = (headerTick >= 8); // ~2s (also drives disconnect blink rate)
 
     if (modeChanged || stepChanged || errorChanged) {
-      if (mode != NODE_ARM_REJECTED) dispZoneName[0] = '\0';
+      // MODE_ALARM also needs it — the gateway sends the triggering
+      // zone's name just before the ALARM command arrives, same 'D'+'Z'
+      // message as the arm-rejected case already used.
+      if (mode != NODE_ARM_REJECTED && mode != MODE_ALARM) dispZoneName[0] = '\0';
       dispRender(mode);
       lastMode       = mode;
       lastSecs       = dispCountdownSecs;
@@ -420,7 +446,7 @@ static THD_FUNCTION(DisplayThread, arg) {
       // ~2s, since `connected` is false by definition on both screens.
       if (mode == MODE_UNINITIALIZED || mode == MODE_OFFLINE_DISP) {
         // nothing to refresh
-      } else if (mode == MODE_ARMED_HOME || mode == MODE_ARMED_AWAY) {
+      } else if (mode == MODE_ARMED_HOME || mode == MODE_ARMED_AWAY || mode == MODE_ALARM) {
         dispHeaderInverted();
       } else {
         dispHeader(connected);
