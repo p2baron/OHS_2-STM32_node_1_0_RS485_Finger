@@ -401,6 +401,10 @@ int main(void) {
   fingerCount = 0;
   fingerPassed = 0;
   uint8_t fpErrCount = 0;    // consecutive R503 communication errors
+  // Last mode the aura LED was actually set for — see the count==0 block
+  // below. 0xFF is a deliberately invalid sentinel so the first pass
+  // always issues a real LED command.
+  authMode_t lastLedMode = (authMode_t)0xFF;
 #ifdef HAS_NFC
   uint8_t nfcErrCount = 0;   // consecutive PN532 communication errors
   uint16_t nfcHealthTick = 0;
@@ -439,7 +443,23 @@ int main(void) {
     } else if (count == 0) {
       // Set LED and song according to mode
       uint8_t ledRet = 0xFF; /* 0xFF = LED call not issued for this mode */
+      bool gwOk = (lastGwContact != 0) &&
+                  ((nowUnixSec() - lastGwContact) < GW_TIMEOUT_SECS);
+      // Only actually re-set the LED when something it depends on changed
+      // (the mode, or — for MODE_DISARMED specifically — connectivity).
+      // This used to run unconditionally every ~2.2s regardless of
+      // whether anything changed, which kept restarting modes like
+      // aLEDModeBreathing from the start before one cycle could finish —
+      // visibly choppy. Still need *some* periodic call to the sensor for
+      // the health-check below, so fall back to a lightweight read-only
+      // ping (R503CheckSensor) when nothing LED-relevant changed.
+      static bool lastGwOk = false;
+      bool ledModeChanged = (nodeState.mode != lastLedMode) ||
+                             (nodeState.mode == MODE_DISARMED && gwOk != lastGwOk);
       chBSemWait(&R503Sem);
+      if (!ledModeChanged) {
+        ledRet = R503CheckSensor();
+      } else {
       switch (nodeState.mode) {
         case MODE_ALARM:
           ledRet = R503SetAuraLED(aLEDModeFlash, aLEDRed, 50, 4);
@@ -459,21 +479,21 @@ int main(void) {
         case MODE_ARMED_AWAY:
           ledRet = R503SetAuraLED(aLEDModeBreathing, aLEDRed, 150, 0);
           break;
-        case MODE_DISARMED: {
-          bool gwOk = (lastGwContact != 0) &&
-                      ((nowUnixSec() - lastGwContact) < GW_TIMEOUT_SECS);
+        case MODE_DISARMED:
           ledRet = gwOk ? R503SetAuraLED(aLEDModeON, aLEDWhite, 255, 0)
                         : R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0);
           break;
-        }
         case MODE_ARMED_HOME:
-          ledRet = R503SetAuraLED(aLEDModeBreathing, aLEDPurple, 50, 0);
+          ledRet = R503SetAuraLED(aLEDModeON, aLEDCyan, 255, 0);
           break;
         case MODE_UNINITIALIZED:
           ledRet = R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0);
           break;
         default:
           break;
+      }
+      lastLedMode = nodeState.mode;
+      lastGwOk    = gwOk;
       }
       chBSemSignal(&R503Sem);
       /* Runtime FP health: UART errors from LED calls reveal sensor disconnect.
@@ -489,11 +509,15 @@ int main(void) {
         } else if (ledRet == R503_TIMEOUT || ledRet == R503_ERROR_RECEIVING_PACKET) {
           if (!(initErrorFlags & INIT_ERROR_FP)) {
             initErrorFlags |= INIT_ERROR_FP;
+            lastLedMode = (authMode_t)0xFF; // force a real LED resync on recovery —
+                                             // the sensor's own hardware state is
+                                             // lost across a disconnect
             DBG("FP sensor disconnected! err=%u\r\n", ledRet);
           }
         } else {
           if (++fpErrCount >= 3 && !(initErrorFlags & INIT_ERROR_FP)) {
             initErrorFlags |= INIT_ERROR_FP;
+            lastLedMode = (authMode_t)0xFF;
             DBG("FP sensor fail! err=%u\r\n", ledRet);
           }
         }
