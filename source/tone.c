@@ -34,6 +34,17 @@ void toneInit(void) {
   pwm_driver = &PWMD4;
   pwmStart(pwm_driver, &pwmcfg);
 }
+// Piezo drive duty cycle, out of 10000 (= 100.00%). 50% is the loudest the
+// hardware can do (duty above 50% just mirrors the curve back down), but
+// also the most mechanically stressful — node 1's piezo degraded after a
+// night of heavy alarm/beep testing at this setting. Loudness falls off
+// roughly with sin(pi*duty) as duty drops, so this is a large, clearly
+// audible cut (~-16dB) without needing any hardware change: the piezo is
+// capacitive (not inductive), so there's no flyback/current concern to
+// work around — just less mechanical excursion per cycle. Lower further
+// (duty-cycle table: 50/15/5/2/1%) if it still seems too loud/harsh.
+#define TONE_DUTY_PERCENT_X100 1500 // 15.00%
+
 /*
  * Function to play tone at specified frequency (Hz) for specified duration (ms)
  * @param frequency Frequency in Hz
@@ -45,7 +56,7 @@ void tone(uint16_t frequency, uint16_t duration) {
   pwmcfg.period = period;
 
   pwmChangePeriod(pwm_driver, period);
-  pwmEnableChannel(pwm_driver, 0, PWM_PERCENTAGE_TO_WIDTH(pwm_driver, 5000));
+  pwmEnableChannel(pwm_driver, 0, PWM_PERCENTAGE_TO_WIDTH(pwm_driver, TONE_DUTY_PERCENT_X100));
 
   if (duration > 0) {
     chThdSleepMilliseconds(duration);
