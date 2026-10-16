@@ -368,8 +368,21 @@ int main(void) {
   DBG("NFC OK\r\n");
 #endif
 
-  // Register this node
+  // Register this node, and stay on the Startup/Connecting screen until the
+  // gateway actually responds — lastGwContact is updated by RS485Thread
+  // (already running) on any message FROM the gateway. The first wait is
+  // plain "CONNECTING"; once that's gone unanswered, show a 10s retry
+  // countdown (dispCountdownSecs, ticked down by the display thread) on
+  // every subsequent wait until contact is made.
   sendConf();
+  for (uint8_t i = 0; i < 10 && lastGwContact == 0; i++) chThdSleepMilliseconds(1000);
+  while (lastGwContact == 0) {
+    sendConf();
+    dispCountdownSecs = 10;
+    dispCountdownMax  = 10;
+    for (uint8_t i = 0; i < 10 && lastGwContact == 0; i++) chThdSleepMilliseconds(1000);
+  }
+  dispCountdownSecs = 0;
 
   // Initialize node state
   setNodeMode(MODE_DISARMED);
@@ -580,7 +593,11 @@ int main(void) {
     // Check if authentication passed, if armed away or home, only one finger is needed
     if ((fingerCount) &&
         ((fingerPassed > FINGER_PASSED) || (nodeState.mode == MODE_ARMED_AWAY) || (nodeState.mode == MODE_ARMED_HOME))) {
-      sendFinger(0, (fingerCount == 1) ? 0 : 1, location);
+      // Arm state only matters when this scan actually arms the group from
+      // disarmed (checkFinger() on the gateway ignores it when disarming) —
+      // each node's physical location decides which mode it requests:
+      // node 2 arms home, every other node arms away. 0=away, 1=home.
+      sendFinger(0, (NODE_ADDRESS == 2) ? 1 : 0, location);
       fingerCount = 0;
       fingerPassed = FINGER_PASSED_COOLDOWN;
       location = DUMMY_NO_VALUE;

@@ -302,7 +302,12 @@ static void ssd1309Clear(void) {
  */
 static void ssd1309Print(uint8_t page, const char *s) {
   if (!dispPresent) return;
-  static uint8_t txBuf[127]; // static: BSS not stack
+  static uint8_t txBuf[129]; // static: BSS not stack — full 128 px width
+                              // (not just the 126 the 21-char text area
+                              // needs): the last 2 columns must still get
+                              // cleared, or stale lit pixels from some
+                              // other full-width draw (Hline, Bar, Clear)
+                              // show through there on the next redraw.
   txBuf[0] = 0x40;
   uint8_t col = 0;
   while (*s && col < 126) { // 21 chars × 6 px = 126 px (display is 128 px)
@@ -317,12 +322,123 @@ static void ssd1309Print(uint8_t page, const char *s) {
     txBuf[1 + col + 5] = 0x00; // inter-char gap
     col += 6;
   }
-  memset(&txBuf[1 + col], 0x00, 126 - col); // pad to end of line
+  memset(&txBuf[1 + col], 0x00, 128 - col); // pad to the full display width
   _ssd1309SetPos(page, 0);
   i2cAcquireBus(&I2CD1);
-  _i2cRawTxRetry(dispAddr, txBuf, 127);
+  _i2cRawTxRetry(dispAddr, txBuf, 129);
   i2cReleaseBus(&I2CD1);
 }
+
+/*
+ * Like ssd1309Print(), but dark text on a filled (lit) background — the
+ * whole page is lit except the glyph pixels themselves, i.e. every byte
+ * is the bitwise complement of what ssd1309Print() would send. Used for
+ * the inverted header bar on Armed Home/Away.
+ */
+static void ssd1309PrintInverted(uint8_t page, const char *s) {
+  if (!dispPresent) return;
+  static uint8_t txBuf[129]; // static: BSS not stack — full 128 px width,
+                              // unlike ssd1309Print()'s 126: a lit background
+                              // needs to reach both edges or the last 2
+                              // columns show as an unlit notch.
+  txBuf[0] = 0x40;
+  uint8_t col = 0;
+  while (*s && col < 126) {
+    uint8_t c = (uint8_t)*s++;
+    if (c < 0x20 || c > 0x7F) c = 0x20;
+    const uint8_t *g = ssd1309Font[c - 0x20];
+    txBuf[1 + col]     = (uint8_t)~g[0];
+    txBuf[1 + col + 1] = (uint8_t)~g[1];
+    txBuf[1 + col + 2] = (uint8_t)~g[2];
+    txBuf[1 + col + 3] = (uint8_t)~g[3];
+    txBuf[1 + col + 4] = (uint8_t)~g[4];
+    txBuf[1 + col + 5] = 0xFF; // inter-char gap, lit (background)
+    col += 6;
+  }
+  memset(&txBuf[1 + col], 0xFF, 128 - col); // pad to the full display width, lit
+  _ssd1309SetPos(page, 0);
+  i2cAcquireBus(&I2CD1);
+  _i2cRawTxRetry(dispAddr, txBuf, 129);
+  i2cReleaseBus(&I2CD1);
+}
+
+/*
+ * Print a text string at the given page, starting at an arbitrary pixel
+ * column. Unlike ssd1309Print(), writes only the glyph columns the string
+ * actually needs — it does not clear anything before `col` or after the
+ * string — so it can sit alongside other content already drawn on the same
+ * page (e.g. an icon to its left). Caller is responsible for clearing the
+ * page first if stale content could otherwise show through.
+ */
+static void ssd1309PrintAt(uint8_t page, uint8_t col, const char *s) {
+  if (!dispPresent) return;
+  static uint8_t txBuf[127]; // static: BSS not stack
+  txBuf[0] = 0x40;
+  uint8_t n = 0;
+  while (*s && (uint16_t)col + n + 6 <= 128) {
+    uint8_t c = (uint8_t)*s++;
+    if (c < 0x20 || c > 0x7F) c = 0x20;
+    const uint8_t *g = ssd1309Font[c - 0x20];
+    txBuf[1 + n]     = g[0];
+    txBuf[1 + n + 1] = g[1];
+    txBuf[1 + n + 2] = g[2];
+    txBuf[1 + n + 3] = g[3];
+    txBuf[1 + n + 4] = g[4];
+    txBuf[1 + n + 5] = 0x00; // inter-char gap
+    n += 6;
+  }
+  if (n == 0) return;
+  _ssd1309SetPos(page, col);
+  i2cAcquireBus(&I2CD1);
+  _i2cRawTxRetry(dispAddr, txBuf, (uint8_t)(n + 1));
+  i2cReleaseBus(&I2CD1);
+}
+
+/*
+ * Draw a monochrome bitmap at (page, col). `bmp` is `pageSpan` page-rows of
+ * `cols` bytes each, row-major (all columns for the first page, then the
+ * next), one byte per column per page — the same column-major, bit0=top
+ * layout as the font. Like ssd1309PrintAt(), touches only its own
+ * footprint; caller clears the page(s) first if needed.
+ */
+static void ssd1309DrawBitmap(uint8_t page, uint8_t col, const uint8_t *bmp,
+                               uint8_t cols, uint8_t pageSpan) {
+  if (!dispPresent) return;
+  static uint8_t buf[129]; // static: BSS not stack
+  buf[0] = 0x40;
+  for (uint8_t p = 0; p < pageSpan; p++) {
+    memcpy(&buf[1], &bmp[(uint16_t)p * cols], cols);
+    _ssd1309SetPos((uint8_t)(page + p), col);
+    i2cAcquireBus(&I2CD1);
+    _i2cRawTxRetry(dispAddr, buf, (uint8_t)(cols + 1));
+    i2cReleaseBus(&I2CD1);
+  }
+}
+
+/* Small 8x8 "signal / connected" glyph — ascending bars, 1 page tall. */
+static const uint8_t iconSignalSmall[8] = {
+  0xC0, 0x00, 0xF0, 0x00, 0xFC, 0x00, 0xFF, 0x00
+};
+
+/* 18x20 shield-with-checkmark glyph (status-ready icon), 3 pages tall
+ * (rows 16-19 of the 3rd page are unused/blank — 20 isn't a multiple of 8).
+ * One byte per column per page, bit0 = top row of that page. Converted
+ * from a row-major bitmap and verified by decoding it back to ASCII before
+ * committing — see the lessons memory. */
+static const uint8_t iconShieldOk[54] = {
+  0xF0, 0xF0, 0x18, 0x18, 0x0C, 0x0C, 0x06, 0x06, 0x03, 0x03, 0x06, 0x06, 0x8C, 0x8C, 0x18, 0x18, 0xF0, 0xF0,
+  0x0F, 0x3F, 0x70, 0xC0, 0x84, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x80, 0xC0, 0x70, 0x3F, 0x0F,
+  0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x02, 0x06, 0x0C, 0x0C, 0x06, 0x02, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00
+};
+
+/* 18x22 padlock glyph (armed-home icon), 3 pages tall (rows 22-23 of the
+ * 3rd page unused). Converted from a row-major bitmap and verified by
+ * decoding it back to ASCII before committing. */
+static const uint8_t iconLock[54] = {
+  0x00, 0x00, 0x00, 0xF8, 0xFC, 0x0E, 0x07, 0x03, 0x03, 0x03, 0x03, 0x07, 0x0E, 0xFC, 0xF8, 0x00, 0x00, 0x00,
+  0xFF, 0xFF, 0x03, 0x03, 0x03, 0x03, 0x03, 0x33, 0xF3, 0xF3, 0x33, 0x03, 0x03, 0x03, 0x03, 0x03, 0xFF, 0xFF,
+  0x3F, 0x3F, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3F, 0x3F
+};
 
 /*
  * Draw a 1-pixel-high horizontal separator line at the top of the given page.
@@ -340,13 +456,32 @@ static void ssd1309Hline(uint8_t page) {
 }
 
 /*
+ * Draw a 1-pixel-high horizontal separator line one row above the bottom
+ * of the given page, leaving a 1px gap before whatever starts on the next
+ * page — matching the 1px gap ssd1309Hline() leaves below itself (the 5x7
+ * font's unused 8th row) before the text below it.
+ */
+static void ssd1309HlineBottom(uint8_t page) {
+  if (!dispPresent) return;
+  static uint8_t buf[129];
+  buf[0] = 0x40;
+  memset(&buf[1], 0x40, 128); // single pixel row, one above the bottom of the page
+  _ssd1309SetPos(page, 0);
+  i2cAcquireBus(&I2CD1);
+  _i2cRawTxRetry(dispAddr, buf, 129);
+  i2cReleaseBus(&I2CD1);
+}
+
+/*
  * Print double-height text at pages (page) and (page+1).
  * Each char is 12 px wide × 16 px tall — fits 10 chars on 128 px line.
  */
 static void ssd1309PrintBig(uint8_t page, const char *s) {
   if (!dispPresent) return;
-  static uint8_t topBuf[121]; // static: BSS not stack — display thread only
-  static uint8_t botBuf[121];
+  static uint8_t topBuf[129]; // static: BSS not stack — full 128 px width,
+                              // not just the 120 the 10-char text area
+                              // needs (same reasoning as ssd1309Print()).
+  static uint8_t botBuf[129];
   topBuf[0] = 0x40;
   botBuf[0] = 0x40;
   uint8_t col = 0;
@@ -372,16 +507,58 @@ static void ssd1309PrintBig(uint8_t page, const char *s) {
     botBuf[1 + col + 1] = 0;
     col += 2;
   }
-  memset(&topBuf[1 + col], 0, 120 - col);
-  memset(&botBuf[1 + col], 0, 120 - col);
+  memset(&topBuf[1 + col], 0, 128 - col);
+  memset(&botBuf[1 + col], 0, 128 - col);
 
   _ssd1309SetPos(page,     0);
   i2cAcquireBus(&I2CD1);
-  _i2cRawTxRetry(dispAddr, topBuf, 121);
+  _i2cRawTxRetry(dispAddr, topBuf, 129);
   i2cReleaseBus(&I2CD1);
   _ssd1309SetPos(page + 1, 0);
   i2cAcquireBus(&I2CD1);
-  _i2cRawTxRetry(dispAddr, botBuf, 121);
+  _i2cRawTxRetry(dispAddr, botBuf, 129);
+  i2cReleaseBus(&I2CD1);
+}
+
+/*
+ * Double-height text starting at an arbitrary pixel column — same
+ * no-clear-outside-its-own-footprint contract as ssd1309PrintAt().
+ */
+static void ssd1309PrintBigAt(uint8_t page, uint8_t col, const char *s) {
+  if (!dispPresent) return;
+  static uint8_t topBuf[121];
+  static uint8_t botBuf[121];
+  topBuf[0] = 0x40;
+  botBuf[0] = 0x40;
+  uint8_t n = 0;
+  while (*s && (uint16_t)col + n + 12 <= 128) {
+    uint8_t c = (uint8_t)*s++;
+    if (c < 0x20 || c > 0x7F) c = 0x20;
+    const uint8_t *g = ssd1309Font[c - 0x20];
+    for (uint8_t sc = 0; sc < 5; sc++) {
+      uint8_t src = g[sc];
+      uint8_t top = ssd1309Expand[src & 0x0F];
+      uint8_t bot = ssd1309Expand[(src >> 4) & 0x0F];
+      topBuf[1 + n]     = top;
+      topBuf[1 + n + 1] = top;
+      botBuf[1 + n]     = bot;
+      botBuf[1 + n + 1] = bot;
+      n += 2;
+    }
+    topBuf[1 + n]     = 0;
+    topBuf[1 + n + 1] = 0;
+    botBuf[1 + n]     = 0;
+    botBuf[1 + n + 1] = 0;
+    n += 2;
+  }
+  if (n == 0) return;
+  _ssd1309SetPos(page, col);
+  i2cAcquireBus(&I2CD1);
+  _i2cRawTxRetry(dispAddr, topBuf, (uint8_t)(n + 1));
+  i2cReleaseBus(&I2CD1);
+  _ssd1309SetPos((uint8_t)(page + 1), col);
+  i2cAcquireBus(&I2CD1);
+  _i2cRawTxRetry(dispAddr, botBuf, (uint8_t)(n + 1));
   i2cReleaseBus(&I2CD1);
 }
 

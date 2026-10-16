@@ -18,17 +18,41 @@
 /* -------------------------------------------------------------------------
  * Screen layout helpers
  * -------------------------------------------------------------------------
- *  Page 0: node name + time          (ssd1309Print)
+ *  Page 0: date + time               (ssd1309Print, via dispHeader)
  *  Page 1: separator line            (ssd1309Hline)
- *  Page 2-3: main mode text          (ssd1309PrintBig)
- *  Page 4: sub-message line 1        (ssd1309Print)
- *  Page 5: sub-message line 2        (ssd1309Print)
- *  Page 6: progress bar              (ssd1309Bar / clear)
- *  Page 7: FP hint / enrollment      (ssd1309Print)
+ *  Page 2-7: mode-specific content
+ *
+ *  MODE_DISARMED additionally uses the bottom two pages as a footer
+ *  (zone/node name + connectivity icon, via dispFooter) — see the mockups
+ *  this was built from. Other modes still use pages 6-7 for their own
+ *  content (progress bar, FP hints) until they get redesigned too.
  */
 
+/* 3-letter day/month names for the header. RTCDateTime.dayofweek is
+ * 1..7 — assumed ISO 8601 (1=Monday); flip this table if it reads a day
+ * off on real hardware. */
+static const char * const dispDayName[8] =
+  {"???", "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
+static const char * const dispMonName[13] =
+  {"???", "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+
+/* "MON, SEP 14          10:02" — date left, time right-aligned */
+static void dispFormatDateTime(char *hdr, size_t n) {
+  RTCDateTime ts;
+  rtcGetTime(&RTCD1, &ts);
+  uint32_t t = convertRTCDateTimeToUnixSecond(&ts);
+  uint8_t h = (uint8_t)((t % 86400UL) / 3600UL);
+  uint8_t m = (uint8_t)((t % 3600UL) / 60UL);
+
+  char date[12];
+  uint8_t dow = (ts.dayofweek <= 7) ? ts.dayofweek : 0;
+  uint8_t mon = (ts.month >= 1 && ts.month <= 12) ? ts.month : 0;
+  chsnprintf(date, sizeof(date), "%s, %s %u", dispDayName[dow], dispMonName[mon], (unsigned)ts.day);
+  chsnprintf(hdr, n, "%-16.16s%02u:%02u", date, h, m);
+}
+
 static void dispHeader(bool connected) {
-  char hdr[22];
   if (!connected) {
     /* Blink the header between warning and blank to signal disconnection */
     static uint8_t blink = 0;
@@ -36,21 +60,58 @@ static void dispHeader(bool connected) {
     ssd1309Print(0, blink ? "!! NO CONTACT !!" : "                ");
     return;
   }
-  /* "NodeName         HH:MM" — name left (up to 16 chars), time right-aligned */
+  char hdr[22];
+  dispFormatDateTime(hdr, sizeof(hdr));
+  ssd1309Print(0, hdr);
+}
+
+/* Solid inverted header bar (dark text on lit background) — Armed Home/Away. */
+static void dispHeaderInverted(void) {
+  char hdr[22];
+  dispFormatDateTime(hdr, sizeof(hdr));
+  ssd1309PrintInverted(0, hdr);
+}
+
+/* Bottom bar: zone/node name left, connectivity icon right — pages 6-7. */
+static void dispFooter(void) {
   char nodeName[NODE_NAME_SIZE + 1];
   memcpy(nodeName, &conf.reg[5], NODE_NAME_SIZE);
   nodeName[NODE_NAME_SIZE] = '\0';
   for (int8_t i = NODE_NAME_SIZE - 1; i >= 0 && nodeName[i] == ' '; i--)
     nodeName[i] = '\0';
 
-  RTCDateTime ts;
-  rtcGetTime(&RTCD1, &ts);
-  uint32_t t = convertRTCDateTimeToUnixSecond(&ts);
-  uint8_t h = (uint8_t)((t % 86400UL) / 3600UL);
-  uint8_t m = (uint8_t)((t % 3600UL) / 60UL);
+  ssd1309HlineBottom(6);
+  ssd1309Print(7, nodeName);
+  /* Static for now — the mockup shows "TRY N"/no icon when disconnected,
+   * which belongs to the not-yet-built Offline screen. */
+  ssd1309DrawBitmap(7, 116, iconSignalSmall, 8, 1);
+}
 
-  chsnprintf(hdr, sizeof(hdr), "%-16.16s%02u:%02u", nodeName, h, m);
-  ssd1309Print(0, hdr);
+/* Footer for the Startup screen: name left, "Retry(NN)" right once a
+ * registration attempt has gone unanswered (dispCountdownSecs > 0) —
+ * blank there during the very first, not-yet-failed wait.
+ * "Retry(NN)" is always 9 chars (zero-padded) so it doesn't shift around
+ * as the count drops from 10 to single digits; the name field is sized
+ * to exactly fill the rest of the 21-char (126px) line — a fixed 16-char
+ * name field (as the main dispFooter() uses, with no right-side text to
+ * share the line with) left only 5 chars for this, which ran off the
+ * right edge of the screen instead of actually being visible. */
+static void dispStartupFooter(void) {
+  char name[NODE_NAME_SIZE + 1];
+  memcpy(name, &conf.reg[5], NODE_NAME_SIZE);
+  name[NODE_NAME_SIZE] = '\0';
+  for (int8_t i = NODE_NAME_SIZE - 1; i >= 0 && name[i] == ' '; i--)
+    name[i] = '\0';
+
+  char footer[22];
+  if (dispCountdownSecs > 0) {
+    char retry[10];
+    chsnprintf(retry, sizeof(retry), "Retry(%02u)", (unsigned)dispCountdownSecs);
+    chsnprintf(footer, sizeof(footer), "%-12.12s%s", name, retry);
+  } else {
+    chsnprintf(footer, sizeof(footer), "%-16.16s", name);
+  }
+  ssd1309Print(7, footer);
 }
 
 static void dispClearPages(uint8_t from, uint8_t to) {
@@ -78,20 +139,56 @@ static void dispRender(authMode_t mode) {
       if (initErrorFlags & INIT_ERROR_FP) {
         ssd1309PrintBig(3, "FP error!");
         ssd1309Print(5, "  Check sensor");
-        dispClearPages(6, 7);
+        dispFooter();
       } else if (initErrorFlags & INIT_ERROR_NFC) {
         ssd1309PrintBig(3, "NFC error!");
         ssd1309Print(5, "  Check sensor");
-        dispClearPages(6, 7);
+        dispFooter();
       } else {
-        ssd1309PrintBig(3, "OHS Ready");
-        dispClearPages(5, 7);
+        // Icon + "DISARMED" / "OHS READY", icon at cols 4-21 (pages 2-4),
+        // text starting after it at col 26 — see the Disarmed mockup.
+        // DISARMED double-height (16px, the biggest the font supports) so
+        // it reads clearly bigger than the single-height OHS READY below it.
+        ssd1309Print(3, "");
+        ssd1309Print(4, "");
+        ssd1309DrawBitmap(2, 4, iconShieldOk, 18, 3);
+        ssd1309PrintBigAt(2, 26, "DISARMED");
+        ssd1309PrintAt(4, 26, "OHS READY");
+        ssd1309Print(5, "");
+        dispFooter();
       }
       break;
 
+    case MODE_ARMED_HOME: {
+      // Inverted header (overwrites the normal one the shared preamble just
+      // drew) + icon/text block + footer — see the Armed Home mockup.
+      RTCDateTime ts;
+      rtcGetTime(&RTCD1, &ts);
+      uint32_t t = convertRTCDateTimeToUnixSecond(&ts);
+      uint8_t ah = (uint8_t)((t % 86400UL) / 3600UL);
+      uint8_t am = (uint8_t)((t % 3600UL) / 60UL);
+      chsnprintf(sub, sizeof(sub), "SINCE %02u:%02u", ah, am);
+
+      dispHeaderInverted();
+      ssd1309Print(1, ""); // no separator line on this screen
+      ssd1309Print(3, "");
+      ssd1309Print(4, "");
+      ssd1309Print(5, "");
+      ssd1309DrawBitmap(2, 4, iconLock, 18, 3);
+      ssd1309PrintAt(2, 26, "ARMED");
+      ssd1309PrintBigAt(3, 26, "HOME");
+      ssd1309PrintAt(5, 26, sub);
+      dispFooter();
+      break;
+    }
+
     case MODE_ARMED_AWAY:
-    case MODE_ARMED_HOME:
-      dispClearPages(2, 7); // blank — do not reveal armed state on screen
+      // Inverted header, same as Armed Home, but the middle stays blank —
+      // discreet, does not reveal armed state — and the footer still
+      // shows, per the Armed Away mockup.
+      dispHeaderInverted();
+      dispClearPages(1, 5);
+      dispFooter();
       break;
 
     case MODE_ARMING: {
@@ -164,8 +261,21 @@ static void dispRender(authMode_t mode) {
         ssd1309Print(5, "  Sensor missing");
         dispClearPages(6, 7);
       } else {
-        ssd1309PrintBig(3, "CONNECTING");
-        dispClearPages(5, 7);
+        // No header/date on this screen (clock isn't synced yet) — big
+        // centered "OHS" title, icon + "CONNECTING" below it, footer with
+        // the name and, once a registration attempt has gone unanswered, a
+        // live retry countdown bottom-right. See the Startup mockup. The
+        // mockup's 3-dot progress indicator is simplified away — a static
+        // text line, no real animation to show.
+        ssd1309Print(0, "");
+        ssd1309Print(1, "");
+        ssd1309PrintBigAt(2, 46, "OHS");
+        ssd1309Print(4, "");
+        ssd1309DrawBitmap(4, 28, iconSignalSmall, 8, 1);
+        ssd1309PrintAt(4, 40, "CONNECTING");
+        ssd1309Print(5, "");
+        ssd1309HlineBottom(6);
+        dispStartupFooter();
       }
       break;
   }
@@ -198,12 +308,12 @@ static THD_FUNCTION(DisplayThread, arg) {
   }
 
   ssd1309Clear();
-  ssd1309Print(0, "");
-  ssd1309Hline(1);
-  ssd1309Print(2, "");
-  ssd1309PrintBig(3, "CONNECTING");
 
-  authMode_t lastMode       = MODE_UNINITIALIZED;
+  // Deliberately not a real mode: nodeState.mode also starts at
+  // MODE_UNINITIALIZED, so initializing lastMode to that same value would
+  // make the first loop pass see "no change" and skip dispRender()
+  // entirely, leaving the screen blank until the mode actually changes.
+  authMode_t lastMode       = (authMode_t)0xFF;
   uint8_t    lastSecs       = 0;
   uint8_t    lastStep       = 0xFF;
   uint8_t    lastErrorFlags = 0;
@@ -240,7 +350,8 @@ static THD_FUNCTION(DisplayThread, arg) {
     bool errorChanged = (initErrorFlags != lastErrorFlags);
     bool countdownTicked = (dispCountdownSecs != lastSecs) &&
                            (mode == MODE_ARMING ||
-                            mode == MODE_AUTH_1 || mode == MODE_AUTH_2 || mode == MODE_AUTH_3);
+                            mode == MODE_AUTH_1 || mode == MODE_AUTH_2 || mode == MODE_AUTH_3 ||
+                            mode == MODE_UNINITIALIZED);
     bool headerChanged = (headerTick >= 8); // ~2s (also drives disconnect blink rate)
 
     if (modeChanged || stepChanged || errorChanged) {
@@ -252,21 +363,34 @@ static THD_FUNCTION(DisplayThread, arg) {
       lastErrorFlags = initErrorFlags;
       headerTick     = 0;
     } else if (countdownTicked) {
-      dispHeader(connected);
-      char sub[22];
-      if (mode == MODE_ARMING) {
-        chsnprintf(sub, sizeof(sub), "  Exit: %us", (unsigned)dispCountdownSecs);
-        ssd1309Print(5, sub);
+      if (mode == MODE_UNINITIALIZED) {
+        dispStartupFooter(); // no header/bar on this screen — see dispRender()
       } else {
-        chsnprintf(sub, sizeof(sub), "  Time: %us", (unsigned)dispCountdownSecs);
-        ssd1309Print(6, sub);
+        dispHeader(connected);
+        char sub[22];
+        if (mode == MODE_ARMING) {
+          chsnprintf(sub, sizeof(sub), "  Exit: %us", (unsigned)dispCountdownSecs);
+          ssd1309Print(5, sub);
+        } else {
+          chsnprintf(sub, sizeof(sub), "  Time: %us", (unsigned)dispCountdownSecs);
+          ssd1309Print(6, sub);
+        }
+        uint8_t pct = dispCountdownMax ? (dispCountdownSecs * 100U / dispCountdownMax) : 0;
+        ssd1309Bar(7, pct);
       }
-      uint8_t pct = dispCountdownMax ? (dispCountdownSecs * 100U / dispCountdownMax) : 0;
-      ssd1309Bar(7, pct);
       lastSecs = dispCountdownSecs;
       headerTick = 0;
     } else if (headerChanged) {
-      dispHeader(connected);
+      // Startup has no header row at all (page 0 is left blank) — skip it,
+      // or this blinks "!! NO CONTACT !!" there every ~2s while retrying,
+      // since `connected` is false by definition during that wait.
+      if (mode == MODE_UNINITIALIZED) {
+        // nothing to refresh
+      } else if (mode == MODE_ARMED_HOME || mode == MODE_ARMED_AWAY) {
+        dispHeaderInverted();
+      } else {
+        dispHeader(connected);
+      }
       headerTick = 0;
     }
   }
