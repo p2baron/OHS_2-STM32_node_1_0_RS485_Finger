@@ -40,8 +40,9 @@ not work against the unmodified upstream gateway.
 
 ## Building
 
-Requires a ChibiOS 21.11.x tree with this project's board files
-(`os/hal/boards/OHS_STM32_F103_MINI`) alongside it, then:
+Requires [vysocan/ChibiOS_21.11.x](https://github.com/vysocan/ChibiOS_21.11.x) —
+a ChibiOS 21.11.x tree with the OHS board files already added
+(`os/hal/boards/OHS_STM32_F103_MINI`), not vanilla ChibiOS-RT. Then:
 
 ```bash
 make CHIBIOS=/path/to/ChibiOS_21.11.x \
