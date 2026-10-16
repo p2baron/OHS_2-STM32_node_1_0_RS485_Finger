@@ -40,5 +40,17 @@ not work against the unmodified upstream gateway.
 
 ## Building
 
-See `CLAUDE.md` in this repo for the full build/flash workflow (ChibiOS tree
-layout, feature flags, per-node `NODE_ADDRESS`, and ST-Link flashing).
+Requires a ChibiOS 21.11.x tree with this project's board files
+(`os/hal/boards/OHS_STM32_F103_MINI`) alongside it, then:
+
+```bash
+make CHIBIOS=/path/to/ChibiOS_21.11.x \
+     UDEFS="-DNODE_ADDRESS=1 -DHAS_DISPLAY" -j$(nproc)
+```
+
+- `NODE_ADDRESS` (default 1): this node's RS485 bus address.
+- `-DHAS_DISPLAY`: SSD1309 OLED on I2C1.
+- `-DHAS_NFC`: optional PN532 NFC reader on I2C1.
+
+Flash the resulting `build/ch.bin` to `0x08000000` with an ST-Link
+(`st-flash write build/ch.bin 0x08000000`), then reset the target.
