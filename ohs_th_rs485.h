@@ -29,6 +29,12 @@ volatile bool pingPending = false;
  * flush/peer-sync-receive, consumed on the next idle tick. Never sent
  * inline from inside a message handler for the same reason as pingPending. */
 volatile bool countPushPending = false;
+/* Same deferral, for the 'F'+'Q' ID-table query (see sendIdTableToGateway()
+ * below) — this arrives automatically right after every registration, so a
+ * blocking reply sent inline from the message handler could stall this
+ * thread and drop whatever the gateway sends next (the original cause of
+ * the Enroll-breaking bug from 2026-10-16). */
+volatile bool idTablePushPending = false;
 
 /*
  * Registration
@@ -88,6 +94,21 @@ static void sendTemplateCountToGateway(void) {
   msgOut.length = 4;
   rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
   DBG_RS485("RS485: FP count %u sent to GW\r\n", count);
+}
+/*
+ * @brief Report this node's fingerprint ID table to the gateway (used for its
+ * resync-mismatch check). Called only from RS485Thread's idle-tick deferred-
+ * send block (see idTablePushPending) — never inline from the 'F'+'Q'
+ * message handler.
+ */
+static void sendIdTableToGateway(void) {
+  msgOut.address = GATEWAYID;
+  msgOut.ctrl = RS485_FLAG_DTA;
+  msgOut.data[0] = 'F'; msgOut.data[1] = 'I';
+  memcpy(&msgOut.data[2], &conf.fpId[0], FINGERS_SIZE * sizeof(uint16_t));
+  msgOut.length = 2 + FINGERS_SIZE * sizeof(uint16_t);
+  rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
+  DBG_RS485("RS485: FP ID table sent to GW\r\n");
 }
 /*
  * Send float value to gateway
@@ -368,6 +389,10 @@ static THD_FUNCTION(RS485Thread, arg) {
         sendTemplateCountToGateway();
         countPushPending = false;
       }
+      if (idTablePushPending) {
+        sendIdTableToGateway();
+        idTablePushPending = false;
+      }
       continue; // timeout tick, no RS485 event
     }
 
@@ -534,13 +559,11 @@ static THD_FUNCTION(RS485Thread, arg) {
                   }
                   break;
                 case 'Q': // Query — send ID table to gateway
-                  msgOut.address = GATEWAYID;
-                  msgOut.ctrl = RS485_FLAG_DTA;
-                  msgOut.data[0] = 'F'; msgOut.data[1] = 'I';
-                  memcpy(&msgOut.data[2], &conf.fpId[0], FINGERS_SIZE * sizeof(uint16_t));
-                  msgOut.length = 2 + FINGERS_SIZE * sizeof(uint16_t);
-                  rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
-                  DBG_RS485("RS485: FP ID table sent to GW\r\n");
+                  // Deferred (see sendIdTableToGateway()) — this arrives
+                  // automatically right after every registration, so a
+                  // blocking reply sent inline here could stall this thread
+                  // and delay/drop whatever the gateway sends next.
+                  idTablePushPending = true;
                   break;
                 default:
                   break;
