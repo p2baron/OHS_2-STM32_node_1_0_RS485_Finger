@@ -47,13 +47,15 @@ void sendConf(void){
   DBG_RS485("\r\n");
 }
 /*
- * Ping
+ * Ping — returns the result so callers can tell whether the gateway
+ * actually ACKed it (used by ServiceThread's offline-reconnect retry,
+ * not just its own hourly unconditional call).
  */
-void ping(void) {
+msg_t ping(void) {
   RS485Cmd_t cmd;
   cmd.address = GATEWAYID;
   cmd.length = 2; // PING = 2
-  rs485SendCmd(&RS485D3, &cmd);
+  return rs485SendCmd(&RS485D3, &cmd);
 }
 /*
  * Send float value to gateway
@@ -324,7 +326,7 @@ static THD_FUNCTION(RS485Thread, arg) {
 
       if (resp == MSG_OK) {
         // Update gateway contact timestamp on any message from gateway
-        if (rs485Msg.address == GATEWAYID) lastGwContact = chVTGetSystemTimeX();
+        if (rs485Msg.address == GATEWAYID) lastGwContact = nowUnixSec();
         // Commands
         if (rs485Msg.ctrl == RS485_FLAG_CMD) {
           switch (rs485Msg.length) {

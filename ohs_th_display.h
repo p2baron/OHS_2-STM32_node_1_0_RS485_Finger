@@ -15,6 +15,12 @@
 
 /* Display state vars are declared in ohs_ssd1309.h (included first) */
 
+/* Local, display-only sentinel for "lost contact with the gateway after
+ * already having connected" — distinct from any real authMode_t/NODE_CMD_*
+ * value, and from the 0xFF sentinel the thread loop seeds lastMode with.
+ * Never sent over RS485 or compared against anything outside this file. */
+#define MODE_OFFLINE_DISP ((authMode_t)0xFE)
+
 /* -------------------------------------------------------------------------
  * Screen layout helpers
  * -------------------------------------------------------------------------
@@ -87,16 +93,16 @@ static void dispFooter(void) {
   ssd1309DrawBitmap(7, 116, iconSignalSmall, 8, 1);
 }
 
-/* Footer for the Startup screen: name left, "Retry(NN)" right once a
- * registration attempt has gone unanswered (dispCountdownSecs > 0) —
- * blank there during the very first, not-yet-failed wait.
+/* Footer for the Startup and Offline screens: name left, "Retry(NN)"
+ * right once an attempt to reach the gateway has gone unanswered
+ * (dispCountdownSecs > 0) — blank there otherwise.
  * "Retry(NN)" is always 9 chars (zero-padded) so it doesn't shift around
  * as the count drops from 10 to single digits; the name field is sized
  * to exactly fill the rest of the 21-char (126px) line — a fixed 16-char
  * name field (as the main dispFooter() uses, with no right-side text to
  * share the line with) left only 5 chars for this, which ran off the
  * right edge of the screen instead of actually being visible. */
-static void dispStartupFooter(void) {
+static void dispRetryFooter(void) {
   char name[NODE_NAME_SIZE + 1];
   memcpy(name, &conf.reg[5], NODE_NAME_SIZE);
   name[NODE_NAME_SIZE] = '\0';
@@ -250,6 +256,23 @@ static void dispRender(authMode_t mode) {
       break;
     }
 
+    case MODE_OFFLINE_DISP: {
+      // Icon + "NO LINK"/"RECONNECTING" + retry footer — see the Offline
+      // mockup. No header, same reasoning as Startup's. The actual
+      // retry/ping cycle lives in ServiceThread; this just displays it.
+      ssd1309Print(0, "");
+      ssd1309Print(1, "");
+      ssd1309Print(3, "");
+      ssd1309Print(4, "");
+      ssd1309DrawBitmap(2, 4, iconLinkBroken, 22, 3);
+      ssd1309PrintBigAt(2, 30, "NO LINK");
+      ssd1309PrintAt(4, 30, "RECONNECTING");
+      ssd1309Print(5, "");
+      ssd1309HlineBottom(6);
+      dispRetryFooter();
+      break;
+    }
+
     case MODE_UNINITIALIZED:
     default:
       if (initErrorFlags & INIT_ERROR_FP) {
@@ -275,7 +298,7 @@ static void dispRender(authMode_t mode) {
         ssd1309PrintAt(4, 40, "CONNECTING");
         ssd1309Print(5, "");
         ssd1309HlineBottom(6);
-        dispStartupFooter();
+        dispRetryFooter();
       }
       break;
   }
@@ -323,15 +346,19 @@ static THD_FUNCTION(DisplayThread, arg) {
   while (true) {
     chThdSleepMilliseconds(250);
 
-    /* Gateway connection: disconnected after GW_TIMEOUT_TICKS with no message */
+    /* Gateway connection: disconnected after GW_TIMEOUT_SECS with no message */
     bool connected = (lastGwContact != 0) &&
-                     (chTimeDiffX(lastGwContact, chVTGetSystemTimeX()) < GW_TIMEOUT_TICKS);
+                     ((nowUnixSec() - lastGwContact) < GW_TIMEOUT_SECS);
 
-    /* Hold mode overrides actual mode for transient messages */
+    /* Hold mode overrides actual mode for transient messages. Lost gateway
+     * contact takes over next (but not during Startup's own "never yet
+     * connected" wait — main() already owns that one's retry/display). */
     authMode_t mode;
     if (dispHoldTicks > 0) {
       dispHoldTicks--;
       mode = (authMode_t)dispHoldMode;
+    } else if (!connected && nodeState.mode != MODE_UNINITIALIZED) {
+      mode = MODE_OFFLINE_DISP;
     } else {
       mode = nodeState.mode;
     }
@@ -351,7 +378,7 @@ static THD_FUNCTION(DisplayThread, arg) {
     bool countdownTicked = (dispCountdownSecs != lastSecs) &&
                            (mode == MODE_ARMING ||
                             mode == MODE_AUTH_1 || mode == MODE_AUTH_2 || mode == MODE_AUTH_3 ||
-                            mode == MODE_UNINITIALIZED);
+                            mode == MODE_UNINITIALIZED || mode == MODE_OFFLINE_DISP);
     bool headerChanged = (headerTick >= 8); // ~2s (also drives disconnect blink rate)
 
     if (modeChanged || stepChanged || errorChanged) {
@@ -363,8 +390,8 @@ static THD_FUNCTION(DisplayThread, arg) {
       lastErrorFlags = initErrorFlags;
       headerTick     = 0;
     } else if (countdownTicked) {
-      if (mode == MODE_UNINITIALIZED) {
-        dispStartupFooter(); // no header/bar on this screen — see dispRender()
+      if (mode == MODE_UNINITIALIZED || mode == MODE_OFFLINE_DISP) {
+        dispRetryFooter(); // no header/bar on this screen — see dispRender()
       } else {
         dispHeader(connected);
         char sub[22];
@@ -381,10 +408,10 @@ static THD_FUNCTION(DisplayThread, arg) {
       lastSecs = dispCountdownSecs;
       headerTick = 0;
     } else if (headerChanged) {
-      // Startup has no header row at all (page 0 is left blank) — skip it,
-      // or this blinks "!! NO CONTACT !!" there every ~2s while retrying,
-      // since `connected` is false by definition during that wait.
-      if (mode == MODE_UNINITIALIZED) {
+      // Startup and Offline have no header row at all (page 0 is left
+      // blank) — skip it, or this blinks "!! NO CONTACT !!" there every
+      // ~2s, since `connected` is false by definition on both screens.
+      if (mode == MODE_UNINITIALIZED || mode == MODE_OFFLINE_DISP) {
         // nothing to refresh
       } else if (mode == MODE_ARMED_HOME || mode == MODE_ARMED_AWAY) {
         dispHeaderInverted();

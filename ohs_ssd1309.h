@@ -20,9 +20,25 @@
 static bool    dispPresent = false;
 static uint8_t dispAddr    = SSD1309_ADDR; // resolved at init
 
-/* Gateway connection tracking */
-#define GW_TIMEOUT_TICKS  TIME_S2I(120)  // 2 minutes without GW message = disconnected
-static volatile systime_t lastGwContact = 0; // updated on every GW message received
+/* Gateway connection tracking.
+ *
+ * Unix seconds (RTC-derived), NOT chVTGetSystemTimeX() ticks: this board
+ * builds with CH_CFG_ST_RESOLUTION=16, so systime_t is a 16-bit tick
+ * counter that wraps every 65536 ticks — ~32.8s at the 2000Hz tick rate.
+ * GW_TIMEOUT_SECS (120s = 240000 ticks) can't even be represented in that
+ * type, so a chTimeDiffX()-based comparison against it can mathematically
+ * never trip — confirmed live via SWD (lastGwContact and the derived
+ * countdown both sat frozen through a disconnect test that should have
+ * triggered it). Unix seconds (uint32_t, ~136 year range) have no such
+ * ceiling. */
+#define GW_TIMEOUT_SECS  120  // seconds without a GW message = disconnected
+static volatile uint32_t lastGwContact = 0; // updated on every GW message received
+
+static uint32_t nowUnixSec(void) {
+  RTCDateTime ts;
+  rtcGetTime(&RTCD1, &ts);
+  return convertRTCDateTimeToUnixSecond(&ts);
+}
 
 /* Display state — written by RS485/main threads, read by display thread */
 volatile uint8_t dispCountdownSecs = 0;
@@ -438,6 +454,15 @@ static const uint8_t iconLock[54] = {
   0x00, 0x00, 0x00, 0xF8, 0xFC, 0x0E, 0x07, 0x03, 0x03, 0x03, 0x03, 0x07, 0x0E, 0xFC, 0xF8, 0x00, 0x00, 0x00,
   0xFF, 0xFF, 0x03, 0x03, 0x03, 0x03, 0x03, 0x33, 0xF3, 0xF3, 0x33, 0x03, 0x03, 0x03, 0x03, 0x03, 0xFF, 0xFF,
   0x3F, 0x3F, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3F, 0x3F
+};
+
+/* 22x22 broken-link glyph (offline icon), 3 pages tall (rows 22-23 of the
+ * 3rd page unused). Converted from a row-major bitmap and verified by
+ * decoding it back to ASCII before committing. */
+static const uint8_t iconLinkBroken[66] = {
+  0x00, 0x00, 0x00, 0x38, 0x38, 0x3F, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x18, 0x1C, 0x1E, 0x0F, 0x07, 0x07, 0x07, 0x8F, 0xFE, 0xFC, 0xF8,
+  0xC0, 0xE0, 0xF0, 0x78, 0x3C, 0x1E, 0x0F, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x3C, 0x1E, 0x0F, 0x07, 0x03, 0x01, 0x00,
+  0x07, 0x0F, 0x1F, 0x3C, 0x38, 0x38, 0x38, 0x3C, 0x1E, 0x0E, 0x06, 0x00, 0x00, 0x00, 0x3F, 0x3F, 0x3F, 0x07, 0x07, 0x00, 0x00, 0x00
 };
 
 /*

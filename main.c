@@ -126,20 +126,28 @@ static msg_t rtttlMailboxBuffer[5]; // Storage for one message (pointer)
 #ifdef HAS_NFC
 #include "ohs_nfc_pn532.h"
 #endif
+#include "date_time.h" // convertRTCDateTimeToUnixSecond() — needed by nowUnixSec() below/in ohs_ssd1309.h
 #ifdef HAS_DISPLAY
 #include "ohs_ssd1309.h"
 #else
-/* lastGwContact and GW_TIMEOUT_TICKS are declared in ohs_ssd1309.h when
- * HAS_DISPLAY is set; provide them here for builds without a display. */
-static systime_t lastGwContact = 0;
-#define GW_TIMEOUT_TICKS TIME_S2I(120)
+/* lastGwContact, GW_TIMEOUT_SECS and nowUnixSec() are declared in
+ * ohs_ssd1309.h when HAS_DISPLAY is set; provide them here for builds
+ * without a display. Unix seconds, not chVTGetSystemTimeX() ticks — see
+ * the comment in ohs_ssd1309.h for why (16-bit systime_t wraps too fast
+ * on this build to use for a 120s timeout). */
+static volatile uint32_t lastGwContact = 0;
+#define GW_TIMEOUT_SECS 120
+static uint32_t nowUnixSec(void) {
+  RTCDateTime ts;
+  rtcGetTime(&RTCD1, &ts);
+  return convertRTCDateTimeToUnixSecond(&ts);
+}
 #endif
 #include "rle.h"
 #include "reg_defaults.h"
 #include "ohs_func.h"
 #include "eeprom2flash.h"
 #include "tone.h"
-#include "date_time.h"
 
 // Sensor init error flags — set during blocking init loops, read by display thread
 #define INIT_ERROR_FP  (1U << 0)
@@ -453,7 +461,7 @@ int main(void) {
           break;
         case MODE_DISARMED: {
           bool gwOk = (lastGwContact != 0) &&
-                      (chTimeDiffX(lastGwContact, chVTGetSystemTimeX()) < GW_TIMEOUT_TICKS);
+                      ((nowUnixSec() - lastGwContact) < GW_TIMEOUT_SECS);
           ledRet = gwOk ? R503SetAuraLED(aLEDModeON, aLEDWhite, 255, 0)
                         : R503SetAuraLED(aLEDModeFlash, aLEDWhite, 150, 0);
           break;
