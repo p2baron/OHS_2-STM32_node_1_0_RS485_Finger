@@ -34,11 +34,18 @@
  *  content (progress bar, FP hints) until they get redesigned too.
  */
 
-/* 3-letter day/month names for the header. RTCDateTime.dayofweek is
- * 1..7 — assumed ISO 8601 (1=Monday); flip this table if it reads a day
- * off on real hardware. */
+/* 3-letter day names for the header, indexed by RTCDateTime.dayofweek
+ * (1..7). Confirmed empirically off by one from our own write-side
+ * formula's intended ISO 8601 (1=Monday) convention — likely the STM32
+ * RTC hardware's own day-of-week field advancing on a different
+ * convention (1=Sunday) once it auto-rolls the calendar forward in
+ * silicon, independent of how we last wrote it. The gateway's own
+ * display doesn't hit this: it uses the standard C library's gmtime()/
+ * strftime() instead of this field, so it never exposed the mismatch.
+ * Table rotated one slot to match what's actually read back, rather
+ * than touching the shared date/DST code other things may depend on. */
 static const char * const dispDayName[8] =
-  {"???", "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
+  {"???", "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
 static const char * const dispMonName[13] =
   {"???", "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
           "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};

@@ -18,6 +18,13 @@
 #define DBG_RS485(...)
 #endif
 
+/* Set by ServiceThread (a different thread) on its own timing, consumed
+ * from RS485Thread's idle-tick deferred-send block below — never called
+ * directly from ServiceThread, which would let a blocking ping collide
+ * with and drop a real incoming message (e.g. an Arming broadcast) that
+ * this thread couldn't receive while off doing an unrelated send. */
+volatile bool pingPending = false;
+
 /*
  * Registration
  */
@@ -306,7 +313,19 @@ static THD_FUNCTION(RS485Thread, arg) {
     mpRxCheckTimeout(&mpRx);
 
     eventflags_t flags = chEvtGetAndClearFlags(&serialListener);
-    if (flags == 0) continue; // timeout tick, no RS485 event
+    if (flags == 0) {
+      // Idle tick — nothing just arrived, so this is the only safe point
+      // to fire our own keepalive/reconnect ping: doing it unconditionally
+      // (e.g. from a different thread, or inline from a message handler)
+      // risks blocking this thread mid-receive and dropping whatever the
+      // gateway sends next, exactly like the 'F'+'Q'/Enroll collision from
+      // earlier — see the lessons memory.
+      if (pingPending) {
+        pingPending = false;
+        if (ping() == MSG_OK) lastGwContact = nowUnixSec();
+      }
+      continue; // timeout tick, no RS485 event
+    }
 
     DBG_RS485("RS485 flag: %u, state: %u, length: %u\r\n", flags, RS485D3.trcState, RS485D3.ibHead);
 
