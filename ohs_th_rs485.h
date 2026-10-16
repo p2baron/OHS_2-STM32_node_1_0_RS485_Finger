@@ -24,6 +24,11 @@
  * with and drop a real incoming message (e.g. an Arming broadcast) that
  * this thread couldn't receive while off doing an unrelated send. */
 volatile bool pingPending = false;
+/* Same deferral, for pushing the R503's valid-template count to the gateway
+ * (Fingerprints page "Sensor" status checkbox) — set after enroll/delete/
+ * flush/peer-sync-receive, consumed on the next idle tick. Never sent
+ * inline from inside a message handler for the same reason as pingPending. */
+volatile bool countPushPending = false;
 
 /*
  * Registration
@@ -63,6 +68,26 @@ msg_t ping(void) {
   cmd.address = GATEWAYID;
   cmd.length = 2; // PING = 2
   return rs485SendCmd(&RS485D3, &cmd);
+}
+/*
+ * @brief Report the R503's own valid-template count to the gateway, so the
+ * Fingerprints page can show live sensor status without needing to query a
+ * node on demand. Called only from RS485Thread's idle-tick deferred-send
+ * block (see countPushPending) — never inline from a message handler.
+ */
+static void sendTemplateCountToGateway(void) {
+  uint16_t count;
+  chBSemWait(&R503Sem);
+  uint8_t ret = R503GetValidTemplateCount(&count);
+  chBSemSignal(&R503Sem);
+  if (ret != R503_OK) return;
+  msgOut.address = GATEWAYID;
+  msgOut.ctrl = RS485_FLAG_DTA;
+  msgOut.data[0] = 'F'; msgOut.data[1] = 'N';
+  memcpy(&msgOut.data[2], &count, 2);
+  msgOut.length = 4;
+  rs485SendMsgWithACK(&RS485D3, &msgOut, MSG_REPEAT);
+  DBG_RS485("RS485: FP count %u sent to GW\r\n", count);
 }
 /*
  * Send float value to gateway
@@ -305,6 +330,18 @@ static THD_FUNCTION(RS485Thread, arg) {
 
   retryPendingSyncs();
 
+  // Report current sensor count once, a few seconds after boot - an already-
+  // registered node may never receive a fresh NODE_CMD_REGISTRATION request,
+  // so relying on that alone would leave the gateway's cache stale forever
+  // after a reflash. Tracked by real elapsed time, not loop iterations -
+  // chEvtWaitAnyTimeout returns early on every bus event, so on a busy bus
+  // a tick count would reach zero well under 1s each, firing before the
+  // R503 has actually initialized. Safe to use virtual-timer ticks here
+  // (unlike long timeouts elsewhere) since 3s is well under the 16-bit
+  // systime_t wraparound (~32.8s).
+  systime_t rs485BootTime = chVTGetSystemTimeX();
+  bool bootCountSent = false;
+
   while (true) {
     // Timed wait allows periodic mpRx timeout checks without a separate thread
     evt = chEvtWaitAnyTimeout(ALL_EVENTS, TIME_MS2I(1000));
@@ -323,6 +360,13 @@ static THD_FUNCTION(RS485Thread, arg) {
       if (pingPending) {
         pingPending = false;
         if (ping() == MSG_OK) lastGwContact = nowUnixSec();
+      }
+      if (!bootCountSent && chVTTimeElapsedSinceX(rs485BootTime) >= TIME_MS2I(3000)) {
+        sendTemplateCountToGateway();
+        bootCountSent = true;
+      } else if (countPushPending) {
+        sendTemplateCountToGateway();
+        countPushPending = false;
       }
       continue; // timeout tick, no RS485 event
     }
@@ -407,6 +451,11 @@ static THD_FUNCTION(RS485Thread, arg) {
                   dispEnrollSlot = temp;
 #endif
                   DBG_RS485("RS485: Enroll cmd slot %u\r\n", temp);
+                  // Immediate "command received" beep, matching Flush/Resync's
+                  // instant feedback — enrollFinger() below only makes sound
+                  // once an image is actually captured (or on a 10s timeout),
+                  // so without this the button press itself is silent.
+                  chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
                   if (enrollFinger((uint16_t)temp) == R503_OK) {
                     DBG_RS485("RS485: enrollFinger OK\r\n");
                     chBSemWait(&R503Sem);
@@ -437,6 +486,7 @@ static THD_FUNCTION(RS485Thread, arg) {
                     }
                     chBSemSignal(&R503Sem);
                     setLastNodeMode(); // re-enable main loop R503 access
+                    countPushPending = true;
                   }
                   break;
                 case 'D': { // Delete
@@ -447,6 +497,7 @@ static THD_FUNCTION(RS485Thread, arg) {
                   clearPendingSync((uint16_t)delLoc);
                   if (delLoc < FINGERS_SIZE) { conf.fpId[delLoc] = 0; writeToFlash(&conf, sizeof(conf)); }
                   chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
+                  countPushPending = true;
                   // Forward to peers only if the command came from the gateway (not a peer forwarding it)
                   if (rs485Msg.address == 0)
                     syncDeleteToNodes((uint16_t)delLoc);
@@ -464,6 +515,7 @@ static THD_FUNCTION(RS485Thread, arg) {
                   writeToFlash(&conf, sizeof(conf));
                   DBG_RS485("RS485: FP flush done\r\n");
                   chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_TICK, TIME_IMMEDIATE);
+                  countPushPending = true;
                   break;
                 case 'G': // Get specific template, send back to requester
                   chBSemWait(&R503Sem);
@@ -523,6 +575,7 @@ static THD_FUNCTION(RS485Thread, arg) {
                     dispHoldMode   = MODE_ENROLLMENT;
                     dispHoldTicks  = 8; // 2 seconds
 #endif
+                    countPushPending = true;
                   } else {
                     DBG_RS485("FP sync: upload failed\r\n");
                   }
