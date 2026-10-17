@@ -209,10 +209,23 @@ static bool _i2cRawTx(uint8_t addr7, const uint8_t *data, uint8_t len) {
  * differences (pull-ups, wiring) rather than anything software can fix
  * outright. Retry a few times so a frequently-updated page (e.g. the
  * header, redrawn every ~2s) doesn't get stuck showing stale content
- * after one failed write with nothing to ever retry it. */
+ * after one failed write with nothing to ever retry it.
+ *
+ * A plain retry only helps a transient NACK/timeout — it does nothing for
+ * an actually wedged peripheral (confirmed live via SWD: I2C1->CR1 stuck
+ * with STOP pending forever, every subsequent _i2cRawTx failing instantly
+ * because START gets set again on top of an unresolved STOP). Once that
+ * happens, nothing ever triggers another render (ohs_th_display.h only
+ * redraws on a mode/content change, and marks it drawn regardless of
+ * whether the write actually succeeded), so the screen freezes until the
+ * node is reset. Recover the same way ssd1309Init()'s own probe loop
+ * already does on a failed attempt: a full stop/start cycle re-inits the
+ * peripheral from a clean register state. */
 static bool _i2cRawTxRetry(uint8_t addr7, const uint8_t *data, uint8_t len) {
   for (uint8_t attempt = 0; attempt < 4; attempt++) {
     if (_i2cRawTx(addr7, data, len)) return true;
+    i2cStop(&I2CD1);
+    i2cStart(&I2CD1, &i2c1cfg);
   }
   return false;
 }
