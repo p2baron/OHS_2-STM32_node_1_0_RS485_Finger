@@ -29,6 +29,8 @@
 #define NODE_NAME_SIZE  16   // As defined on gateway
 #define MSG_REPEAT      3    // Repeat sending
 #define DUMMY_NO_VALUE  0xFF // Dummy value for no value
+// R503 touch/wake pin (PA1, active low) — see HAS_FINGERPRINT pad init below.
+#define GPIOA_FP_TOUCH  GPIOA_RADIO_INT
 // Radio
 #ifdef HAS_RADIO
 #define GATEWAYID       1    // Radio Gateway
@@ -216,6 +218,11 @@ int main(void) {
 #ifdef HAS_FINGERPRINT
   palSetPadMode(GPIOA, GPIOA_TX2, PAL_MODE_STM32_ALTERNATE_PUSHPULL);
   palSetPadMode(GPIOA, GPIOA_RX2, PAL_MODE_INPUT);
+  // R503 touch/wake pin, active low — wired to PA1, the board's otherwise
+  // unused "RADIO_INT" pin on this radio-less (HAS_RS485) node variant.
+  // Pull-up is defensive (the sensor is documented to drive it, but this
+  // avoids a floating read if it's ever disconnected/unpowered at boot).
+  palSetPadMode(GPIOA, GPIOA_FP_TOUCH, PAL_MODE_INPUT_PULLUP);
 #endif
 #ifdef HAS_NFC
   palSetPadMode(GPIOB, GPIOB_SCL1, PAL_MODE_STM32_ALTERNATE_OPENDRAIN);
@@ -398,6 +405,7 @@ int main(void) {
   // Initialize counters
   int8_t count = -1;
   uint32_t lastBeepSec = 0; // RTC second when synchronized beep last fired
+  bool fpBeeped = false; // suppress repeat OK/ERROR tune within one continuous touch
   fingerCount = 0;
   fingerPassed = 0;
   uint8_t fpErrCount = 0;    // consecutive R503 communication errors
@@ -552,6 +560,17 @@ int main(void) {
       continue;
     }
 
+    // The touch pin's hardware purpose is waking the R503 from low-power
+    // sleep — gating the scan on it (skip TakeImage() entirely whenever not
+    // touched) raced the module's own wake-up, making matches intermittently
+    // fail right after a touch (confirmed live: LED stuck white, not green,
+    // despite a sustained touch). Scan unconditionally like before; only use
+    // the pin to reset the once-per-touch error-beep suppression below.
+    bool fpTouched = (palReadPad(GPIOA, GPIOA_FP_TOUCH) == PAL_LOW);
+    if (!fpTouched) {
+      fpBeeped = false;
+    }
+
     // Increment finger passed counter
     fingerPassed++;
 
@@ -574,18 +593,30 @@ int main(void) {
     }
     if ((resp == R503_OK) && (fingerPassed >= 0)) {
       resp = R503ExtractFeatures(FINGERPRINT_CHAR_BUFFER);
-      if (resp != R503_OK) {
-        chBSemSignal(&R503Sem);
-        continue;
-      } else {
+      if (resp == R503_OK) {
         resp = R503SearchFinger(FINGERPRINT_CHAR_BUFFER, &location, &confidence);
         if (resp == R503_OK) {
-          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_OK, TIME_IMMEDIATE);
+          // Beep once per touch, immediately, for "finger recognized" — the
+          // separate SONG_ARMING jingle (mode-change handler above) already
+          // gives a distinct "now actually arming" cue a moment later if the
+          // hold turns out to be long enough, so this doesn't need to wait
+          // for that to avoid the earlier double-beep problem.
+          //
+          // Gated on fingerCount (not the touch pin) because the pin bounces
+          // briefly during a hold on this hardware — a raw-pin-based "has it
+          // released yet" check kept re-arming the beep mid-hold. fingerCount
+          // only resets once sendFinger() actually fires, so it can't bounce.
+          if (fingerCount == 0) {
+            chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_OK, TIME_IMMEDIATE);
+          }
           R503SetAuraLED(aLEDModeBreathing, aLEDGreen, 50, 2);
           DBG(" >> Found finger, ID: %d, confidence; %d\r\n", location, confidence);
           fingerCount++;
         } else {
-          chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
+          if (!fpBeeped) {
+            chMBPostTimeout(&rtttlMailbox, (msg_t)SONG_ERROR, TIME_IMMEDIATE);
+            fpBeeped = true;
+          }
           R503SetAuraLED(aLEDModeBreathing, aLEDRed, 50, 2);
         }
       }
